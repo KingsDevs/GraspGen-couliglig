@@ -1,6 +1,7 @@
 """Lightweight SAM2 ZMQ client.
 
-Sends a 3-D camera-frame point to the SAM2 server and receives a binary mask.
+Fetches the latest segmentation result from the SAM2 server.
+Segmentation is triggered by clicking in the server's visualization window.
 
 Only requires: pyzmq, msgpack, msgpack-numpy, numpy.
 
@@ -8,7 +9,7 @@ Usage:
     from grasp_gen.serving.sam2_client import SAM2Client
 
     client = SAM2Client("localhost", rep_port=5561)
-    mask, score = client.segment(point_3d=[0.1, -0.05, 0.8])
+    mask, score = client.get_result()
 """
 
 import logging
@@ -45,19 +46,20 @@ class SAM2Client:
             sock.connect(self._addr)
             self._socket = sock
 
-    def segment(self, point_3d: np.ndarray) -> tuple[np.ndarray, float]:
-        """Request segmentation for a 3-D camera-frame point.
+    def get_result(self) -> tuple[np.ndarray, float]:
+        """Fetch the latest segmentation result from the server.
 
-        Args:
-            point_3d: (3,) array [X, Y, Z] in camera frame (metres).
+        Segmentation is triggered by clicking in the server's --visualize window.
 
         Returns:
             mask:  (H, W) uint8 binary mask (1 = object, 0 = background).
             score: SAM2 confidence score for the mask.
+
+        Raises:
+            RuntimeError: if the server has no result yet or returns an error.
         """
         self._ensure_connected()
-        payload = {"point_3d": np.asarray(point_3d, dtype=np.float64).tolist()}
-        self._socket.send(msgpack.packb(payload, use_bin_type=True))
+        self._socket.send(msgpack.packb({}, use_bin_type=True))
         raw = self._socket.recv()
         response = msgpack.unpackb(raw, raw=False)
         if "error" in response:

@@ -82,8 +82,8 @@ def view_image_point_cloud_point(image, _point_cloud, point):
     rgb = _decode_image_payload(image)
     point_2d = np.asarray(point).flatten()
 
-    u = max(0, min(int(round(point_2d[1])), rgb.shape[1] - 1))
-    v = max(0, min(int(round(point_2d[0])), rgb.shape[0] - 1))
+    u = max(0, min(int(round(point_2d[0])), rgb.shape[1] - 1))
+    v = max(0, min(int(round(point_2d[1])), rgb.shape[0] - 1))
 
     print(f"Received 2D point: ({u}, {v})")
 

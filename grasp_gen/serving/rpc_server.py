@@ -61,14 +61,20 @@ def _decode_image_payload(image_payload) -> np.ndarray:
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
+def _decode_point_cloud(pc_payload) -> np.ndarray:
+    """Decode point cloud payload to (H, W, 3) or (N, 3) float32 array."""
+    return np.asarray(pc_payload, dtype=np.float32)
+
+
+
 def _draw_overlay(
-    rgb: np.ndarray, mask: np.ndarray, u: int, v: int, score: float
+    rgb: np.ndarray, mask: np.ndarray, u: int, v: int, score: float, n_pts: int
 ) -> np.ndarray:
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     bgr[mask == 1] = (bgr[mask == 1] * 0.6 + np.array([0, 200, 0]) * 0.4).astype(np.uint8)
     cv2.circle(bgr, (u, v), 6, (0, 0, 255), -1)
     cv2.circle(bgr, (u, v), 8, (255, 255, 255), 2)
-    label = f"score={score:.3f}"
+    label = f"score={score:.3f}  pts={n_pts}"
     cv2.putText(bgr, label, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
     cv2.putText(bgr, label, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 1, cv2.LINE_AA)
     return bgr
@@ -78,14 +84,25 @@ def _draw_overlay(
 # RPC functions
 # ---------------------------------------------------------------------------
 
-def view_image_point_cloud_point(image, _point_cloud, point):
+def view_image_point_cloud_point(image, point_cloud, point):
     rgb = _decode_image_payload(image)
-    point_2d = np.asarray(point).flatten()
+    pc = _decode_point_cloud(point_cloud)  # (H_c, W_c, 3) organized
 
+    point_2d = np.asarray(point).flatten()
     u = max(0, min(int(round(point_2d[0])), rgb.shape[1] - 1))
     v = max(0, min(int(round(point_2d[1])), rgb.shape[0] - 1))
 
-    print(f"Received 2D point: ({u}, {v})")
+    finite_map = np.isfinite(pc).all(axis=-1) if pc.ndim == 3 else np.isfinite(pc).all(axis=1)
+    total_finite = int(finite_map.sum())
+    if total_finite > 0:
+        valid_flat = pc[finite_map] if pc.ndim == 3 else pc[finite_map]
+        print(
+            f"Received 2D point: ({u}, {v}), cloud shape: {pc.shape}, "
+            f"total finite pts: {total_finite}, "
+            f"z range: {valid_flat[:,2].min():.3f}-{valid_flat[:,2].max():.3f}m"
+        )
+    else:
+        print(f"Received 2D point: ({u}, {v}), cloud shape: {pc.shape}, total finite pts: 0")
 
     with torch.inference_mode():
         _predictor.set_image(rgb)
@@ -95,15 +112,55 @@ def view_image_point_cloud_point(image, _point_cloud, point):
             multimask_output=False,
         )
 
-    mask = masks[0].astype(np.uint8)
+    mask = masks[0].astype(np.uint8)  # (H_img, W_img)
     score = float(scores[0])
     print(f"SAM2 mask coverage={mask.mean() * 100:.1f}%, score={score:.3f}")
 
-    vis = _draw_overlay(rgb, mask, u, v, score)
+    # Apply mask to organized cloud — resize mask to match cloud's strided dims
+    if pc.ndim == 3:
+        H_c, W_c = pc.shape[:2]
+        mask_resized = cv2.resize(mask, (W_c, H_c), interpolation=cv2.INTER_NEAREST)
+        masked_pixels = int(mask_resized.sum())
+        pts = pc[mask_resized == 1]  # (M, 3)
+        finite_mask = np.isfinite(pts).all(axis=1)
+        z_mask = pts[:, 2] > 0
+        print(
+            f"Cloud ({H_c}x{W_c}), image ({rgb.shape[0]}x{rgb.shape[1]}), "
+            f"masked_pixels={masked_pixels}, "
+            f"finite={finite_mask.sum()}, z>0={(finite_mask & z_mask).sum()}"
+        )
+        pts = pts[finite_mask & z_mask]
+
+        # Textureless surfaces (e.g. cubes) cause ZED depth NaN inside the mask.
+        # Fall back to dilated mask to capture valid boundary/edge points.
+        if len(pts) == 0 and masked_pixels > 0:
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+            mask_dilated = cv2.dilate(mask_resized, kernel)
+            pts_d = pc[mask_dilated == 1]
+            fm = np.isfinite(pts_d).all(axis=1) & (pts_d[:, 2] > 0)
+            pts = pts_d[fm]
+            print(f"Dilation fallback: {len(pts)} boundary points")
+    else:
+        pts = pc  # flat cloud — return as-is
+
+    print(f"Segmented {len(pts)} 3D points")
+
+    vis = _draw_overlay(rgb, mask, u, v, score, len(pts))
+
+    # Overlay segmented cloud points onto the image as magenta stars
+    if pc.ndim == 3 and len(pts) > 0:
+        H_c, W_c = pc.shape[:2]
+        scale_r = rgb.shape[0] / H_c
+        scale_c = rgb.shape[1] / W_c
+        seg_map = (mask_resized == 1) & finite_map & (pc[:, :, 2] > 0)
+        for r, c in zip(*np.where(seg_map)):
+            px = (int(c * scale_c), int(r * scale_r))
+            cv2.drawMarker(vis, px, (255, 0, 255), cv2.MARKER_STAR, 12, 2)
+
     cv2.imshow("SAM2 Segmentation", vis)
     cv2.waitKey(1)
 
-    return "ok"
+    return pts.tolist()
 
 
 FUNCTIONS = {

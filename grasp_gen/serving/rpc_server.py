@@ -9,6 +9,7 @@ import msgpack_numpy
 import numpy as np
 import torch
 import zmq
+from grasp_gen.grasp_server import GraspGenSampler, load_grasp_cfg
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 
@@ -27,11 +28,34 @@ RPC_VISUALIZE = os.getenv("RPC_VISUALIZE", "1").lower() not in {
     "no",
 }
 RPC_MAX_MARKERS = int(os.getenv("RPC_MAX_MARKERS", "1000"))
+GRASPGEN_CONFIG = os.getenv(
+    "GRASPGEN_CONFIG", "weights/graspgen_robotiq_2f_140.yml"
+)
+GRASPGEN_NUM_GRASPS = int(os.getenv("GRASPGEN_NUM_GRASPS", "100"))
+GRASPGEN_TOPK = int(os.getenv("GRASPGEN_TOPK", "20"))
+GRASPGEN_MIN_GRASPS = int(os.getenv("GRASPGEN_MIN_GRASPS", "1"))
+GRASPGEN_MAX_TRIES = int(os.getenv("GRASPGEN_MAX_TRIES", "1"))
+GRASPGEN_REMOVE_OUTLIERS = os.getenv("GRASPGEN_REMOVE_OUTLIERS", "1").lower() not in {
+    "0",
+    "false",
+    "no",
+}
+GRASPGEN_MIN_POINTS = int(os.getenv("GRASPGEN_MIN_POINTS", "32"))
 
 print("Loading SAM2 ...")
 _sam2_model = build_sam2(SAM2_CONFIG, SAM2_CHECKPOINT, device="cuda")
 _predictor = SAM2ImagePredictor(_sam2_model)
 print("SAM2 loaded.")
+
+print(f"Loading GraspGen from {GRASPGEN_CONFIG} ...")
+_grasp_cfg = load_grasp_cfg(GRASPGEN_CONFIG)
+_grasp_sampler = GraspGenSampler(_grasp_cfg)
+print(
+    "GraspGen loaded "
+    f"(num_grasps={GRASPGEN_NUM_GRASPS}, topk={GRASPGEN_TOPK}, "
+    f"min_grasps={GRASPGEN_MIN_GRASPS}, max_tries={GRASPGEN_MAX_TRIES}, "
+    f"remove_outliers={GRASPGEN_REMOVE_OUTLIERS})"
+)
 
 # ---------------------------------------------------------------------------
 # ZMQ
@@ -106,6 +130,15 @@ def _send_response(response: dict, protocol: str) -> None:
         socket.send_json(_json_ready(response))
     else:
         socket.send(msgpack.packb(response, use_bin_type=True))
+
+
+def _empty_grasp_result(reason: str) -> dict:
+    return {
+        "grasps": np.empty((0, 4, 4), dtype=np.float32),
+        "confidences": np.empty((0,), dtype=np.float32),
+        "num_grasps": 0,
+        "message": reason,
+    }
 
 
 def _draw_overlay(
@@ -216,6 +249,47 @@ def view_image_point_cloud_point(image, point_cloud, point):
 
     t_mask = time.perf_counter()
 
+    if pts.ndim != 2 or pts.shape[1] != 3:
+        grasp_result = _empty_grasp_result(
+            f"Segmented point cloud must be (N, 3), got {pts.shape}"
+        )
+    elif len(pts) < GRASPGEN_MIN_POINTS:
+        grasp_result = _empty_grasp_result(
+            f"Only {len(pts)} segmented points; need at least {GRASPGEN_MIN_POINTS}"
+        )
+    else:
+        grasps, confidences = GraspGenSampler.run_inference(
+            pts.astype(np.float32, copy=False),
+            _grasp_sampler,
+            grasp_threshold=-1.0,
+            num_grasps=GRASPGEN_NUM_GRASPS,
+            topk_num_grasps=GRASPGEN_TOPK,
+            min_grasps=GRASPGEN_MIN_GRASPS,
+            max_tries=GRASPGEN_MAX_TRIES,
+            remove_outliers=GRASPGEN_REMOVE_OUTLIERS,
+        )
+
+        if len(grasps) == 0:
+            grasp_result = _empty_grasp_result("GraspGen returned no grasps")
+        else:
+            if torch.is_tensor(grasps):
+                grasps_np = grasps.detach().cpu().numpy().astype(np.float32)
+            else:
+                grasps_np = np.asarray(grasps, dtype=np.float32)
+            if torch.is_tensor(confidences):
+                confidences_np = (
+                    confidences.detach().cpu().numpy().astype(np.float32)
+                )
+            else:
+                confidences_np = np.asarray(confidences, dtype=np.float32)
+            grasps_np[:, 3, 3] = 1
+            grasp_result = {
+                "grasps": grasps_np,
+                "confidences": confidences_np,
+                "num_grasps": len(grasps_np),
+            }
+    t_graspgen = time.perf_counter()
+
     if RPC_VISUALIZE:
         vis = _draw_overlay(rgb, mask, u, v, score, len(pts))
 
@@ -242,10 +316,19 @@ def view_image_point_cloud_point(image, point_cloud, point):
         f"decode={(t_decode - t_start) * 1000:.1f}ms, "
         f"sam={(t_sam - t_decode) * 1000:.1f}ms, "
         f"mask={(t_mask - t_sam) * 1000:.1f}ms, "
-        f"vis={(t_vis - t_mask) * 1000:.1f}ms"
+        f"graspgen={(t_graspgen - t_mask) * 1000:.1f}ms, "
+        f"vis={(t_vis - t_graspgen) * 1000:.1f}ms"
     )
 
-    return pts.astype(np.float32, copy=False)
+    grasp_result["timing"] = {
+        "decode_ms": (t_decode - t_start) * 1000,
+        "sam_ms": (t_sam - t_decode) * 1000,
+        "mask_ms": (t_mask - t_sam) * 1000,
+        "graspgen_ms": (t_graspgen - t_mask) * 1000,
+        "visualize_ms": (t_vis - t_graspgen) * 1000,
+        "total_handler_ms": (t_vis - t_start) * 1000,
+    }
+    return grasp_result
 
 
 FUNCTIONS = {
@@ -275,7 +358,14 @@ while True:
             t_handle = time.perf_counter()
             result = FUNCTIONS[func_name](*args)
             t_result = time.perf_counter()
-            _send_response({"success": True, "result": result}, protocol)
+            if isinstance(result, dict):
+                response = {"success": True, **result}
+            else:
+                response = {"success": True, "result": result}
+            response.setdefault("timing", {})["handler_ms"] = (
+                t_result - t_handle
+            ) * 1000
+            _send_response(response, protocol)
             t_sent = time.perf_counter()
             print(
                 f"Replied ({protocol}) | "

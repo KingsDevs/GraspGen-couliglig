@@ -134,10 +134,30 @@ def _send_response(response: dict, protocol: str) -> None:
 
 def _empty_grasp_result(reason: str) -> dict:
     return {
-        "grasps": np.empty((0, 4, 4), dtype=np.float32),
-        "confidences": np.empty((0,), dtype=np.float32),
+        "best_grasp": None,
         "num_grasps": 0,
+        "num_candidates": 0,
         "message": reason,
+    }
+
+
+def _format_best_grasp(grasps: np.ndarray, confidences: np.ndarray) -> dict:
+    best_idx = int(np.argmax(confidences))
+    pose = grasps[best_idx].astype(np.float32, copy=False)
+    confidence = float(confidences[best_idx])
+    return {
+        "best_grasp": {
+            "pose": pose,
+            "position": pose[:3, 3].astype(np.float32, copy=False),
+            "rotation_matrix": pose[:3, :3].astype(np.float32, copy=False),
+            "confidence": confidence,
+            "candidate_index": best_idx,
+            "frame": "zed_camera",
+            "units": "meters",
+        },
+        "num_grasps": 1,
+        "num_candidates": int(len(grasps)),
+        "best_confidence": confidence,
     }
 
 
@@ -283,11 +303,7 @@ def view_image_point_cloud_point(image, point_cloud, point):
             else:
                 confidences_np = np.asarray(confidences, dtype=np.float32)
             grasps_np[:, 3, 3] = 1
-            grasp_result = {
-                "grasps": grasps_np,
-                "confidences": confidences_np,
-                "num_grasps": len(grasps_np),
-            }
+            grasp_result = _format_best_grasp(grasps_np, confidences_np)
     t_graspgen = time.perf_counter()
 
     if RPC_VISUALIZE:

@@ -1,11 +1,18 @@
 import base64
+import json
+import os
+import time
 
 import cv2
+import msgpack
+import msgpack_numpy
 import numpy as np
 import torch
 import zmq
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
+
+msgpack_numpy.patch()
 
 # ---------------------------------------------------------------------------
 # SAM2 — loaded once at startup
@@ -13,6 +20,13 @@ from sam2.sam2_image_predictor import SAM2ImagePredictor
 
 SAM2_CHECKPOINT = "weights/sam2.1_hiera_small.pt"
 SAM2_CONFIG = "configs/sam2.1/sam2.1_hiera_s"
+RPC_PORT = int(os.getenv("RPC_PORT", "5555"))
+RPC_VISUALIZE = os.getenv("RPC_VISUALIZE", "1").lower() not in {
+    "0",
+    "false",
+    "no",
+}
+RPC_MAX_MARKERS = int(os.getenv("RPC_MAX_MARKERS", "1000"))
 
 print("Loading SAM2 ...")
 _sam2_model = build_sam2(SAM2_CONFIG, SAM2_CHECKPOINT, device="cuda")
@@ -25,7 +39,7 @@ print("SAM2 loaded.")
 
 context = zmq.Context()
 socket = context.socket(zmq.REP)
-socket.bind("tcp://0.0.0.0:5555")
+socket.bind(f"tcp://0.0.0.0:{RPC_PORT}")
 
 
 # ---------------------------------------------------------------------------
@@ -66,17 +80,64 @@ def _decode_point_cloud(pc_payload) -> np.ndarray:
     return np.asarray(pc_payload, dtype=np.float32)
 
 
+def _decode_message(raw: bytes) -> tuple[dict, str]:
+    """Decode either the legacy JSON request or the faster msgpack request."""
+    try:
+        return json.loads(raw.decode("utf-8")), "json"
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return msgpack.unpackb(raw, raw=False), "msgpack"
+
+
+def _json_ready(value):
+    """Convert NumPy values to JSON-compatible values for legacy clients."""
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {key: _json_ready(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_ready(item) for item in value]
+    return value
+
+
+def _send_response(response: dict, protocol: str) -> None:
+    if protocol == "json":
+        socket.send_json(_json_ready(response))
+    else:
+        socket.send(msgpack.packb(response, use_bin_type=True))
+
 
 def _draw_overlay(
     rgb: np.ndarray, mask: np.ndarray, u: int, v: int, score: float, n_pts: int
 ) -> np.ndarray:
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-    bgr[mask == 1] = (bgr[mask == 1] * 0.6 + np.array([0, 200, 0]) * 0.4).astype(np.uint8)
+    bgr[mask == 1] = (
+        bgr[mask == 1] * 0.6 + np.array([0, 200, 0]) * 0.4
+    ).astype(np.uint8)
     cv2.circle(bgr, (u, v), 6, (0, 0, 255), -1)
     cv2.circle(bgr, (u, v), 8, (255, 255, 255), 2)
     label = f"score={score:.3f}  pts={n_pts}"
-    cv2.putText(bgr, label, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-    cv2.putText(bgr, label, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 1, cv2.LINE_AA)
+    cv2.putText(
+        bgr,
+        label,
+        (10, 28),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        bgr,
+        label,
+        (10, 28),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (0, 0, 0),
+        1,
+        cv2.LINE_AA,
+    )
     return bgr
 
 
@@ -85,14 +146,20 @@ def _draw_overlay(
 # ---------------------------------------------------------------------------
 
 def view_image_point_cloud_point(image, point_cloud, point):
+    t_start = time.perf_counter()
     rgb = _decode_image_payload(image)
     pc = _decode_point_cloud(point_cloud)  # (H_c, W_c, 3) organized
+    t_decode = time.perf_counter()
 
     point_2d = np.asarray(point).flatten()
     u = max(0, min(int(round(point_2d[0])), rgb.shape[1] - 1))
     v = max(0, min(int(round(point_2d[1])), rgb.shape[0] - 1))
 
-    finite_map = np.isfinite(pc).all(axis=-1) if pc.ndim == 3 else np.isfinite(pc).all(axis=1)
+    finite_map = (
+        np.isfinite(pc).all(axis=-1)
+        if pc.ndim == 3
+        else np.isfinite(pc).all(axis=1)
+    )
     total_finite = int(finite_map.sum())
     if total_finite > 0:
         valid_flat = pc[finite_map] if pc.ndim == 3 else pc[finite_map]
@@ -102,7 +169,10 @@ def view_image_point_cloud_point(image, point_cloud, point):
             f"z range: {valid_flat[:,2].min():.3f}-{valid_flat[:,2].max():.3f}m"
         )
     else:
-        print(f"Received 2D point: ({u}, {v}), cloud shape: {pc.shape}, total finite pts: 0")
+        print(
+            f"Received 2D point: ({u}, {v}), cloud shape: {pc.shape}, "
+            "total finite pts: 0"
+        )
 
     with torch.inference_mode():
         _predictor.set_image(rgb)
@@ -111,6 +181,7 @@ def view_image_point_cloud_point(image, point_cloud, point):
             point_labels=np.array([1]),
             multimask_output=False,
         )
+    t_sam = time.perf_counter()
 
     mask = masks[0].astype(np.uint8)  # (H_img, W_img)
     score = float(scores[0])
@@ -143,24 +214,38 @@ def view_image_point_cloud_point(image, point_cloud, point):
     else:
         pts = pc  # flat cloud — return as-is
 
-    print(f"Segmented {len(pts)} 3D points")
+    t_mask = time.perf_counter()
 
-    vis = _draw_overlay(rgb, mask, u, v, score, len(pts))
+    if RPC_VISUALIZE:
+        vis = _draw_overlay(rgb, mask, u, v, score, len(pts))
 
-    # Overlay segmented cloud points onto the image as magenta stars
-    if pc.ndim == 3 and len(pts) > 0:
-        H_c, W_c = pc.shape[:2]
-        scale_r = rgb.shape[0] / H_c
-        scale_c = rgb.shape[1] / W_c
-        seg_map = (mask_resized == 1) & finite_map & (pc[:, :, 2] > 0)
-        for r, c in zip(*np.where(seg_map)):
-            px = (int(c * scale_c), int(r * scale_r))
-            cv2.drawMarker(vis, px, (255, 0, 255), cv2.MARKER_STAR, 12, 2)
+        # Drawing every masked pixel dominates latency for large masks.
+        if pc.ndim == 3 and len(pts) > 0 and RPC_MAX_MARKERS > 0:
+            H_c, W_c = pc.shape[:2]
+            scale_r = rgb.shape[0] / H_c
+            scale_c = rgb.shape[1] / W_c
+            seg_map = (mask_resized == 1) & finite_map & (pc[:, :, 2] > 0)
+            coords = np.column_stack(np.where(seg_map))
+            if len(coords) > RPC_MAX_MARKERS:
+                step = int(np.ceil(len(coords) / RPC_MAX_MARKERS))
+                coords = coords[::step][:RPC_MAX_MARKERS]
+            for r, c in coords:
+                px = (int(c * scale_c), int(r * scale_r))
+                cv2.drawMarker(vis, px, (255, 0, 255), cv2.MARKER_STAR, 12, 2)
 
-    cv2.imshow("SAM2 Segmentation", vis)
-    cv2.waitKey(1)
+        cv2.imshow("SAM2 Segmentation", vis)
+        cv2.waitKey(1)
 
-    return pts.tolist()
+    t_vis = time.perf_counter()
+    print(
+        f"Segmented {len(pts)} 3D points | "
+        f"decode={(t_decode - t_start) * 1000:.1f}ms, "
+        f"sam={(t_sam - t_decode) * 1000:.1f}ms, "
+        f"mask={(t_mask - t_sam) * 1000:.1f}ms, "
+        f"vis={(t_vis - t_mask) * 1000:.1f}ms"
+    )
+
+    return pts.astype(np.float32, copy=False)
 
 
 FUNCTIONS = {
@@ -171,22 +256,37 @@ FUNCTIONS = {
 # Main loop
 # ---------------------------------------------------------------------------
 
-print("RPC Server started...")
+print(
+    f"RPC Server started on port {RPC_PORT} "
+    f"(visualize={RPC_VISUALIZE}, max_markers={RPC_MAX_MARKERS})"
+)
 
 while True:
-    message = socket.recv_json()
+    raw = socket.recv()
 
-    func_name = message["function"]
-    args = message.get("args", [])
+    try:
+        message, protocol = _decode_message(raw)
+        func_name = message["function"]
+        args = message.get("args", [])
 
-    print("Received:", func_name)
+        print(f"Received: {func_name} ({protocol})")
 
-    if func_name in FUNCTIONS:
-        try:
+        if func_name in FUNCTIONS:
+            t_handle = time.perf_counter()
             result = FUNCTIONS[func_name](*args)
-            socket.send_json({"success": True, "result": result})
-        except Exception as exc:
-            print(f"Error in {func_name}:", exc)
-            socket.send_json({"success": False, "error": str(exc)})
-    else:
-        socket.send_json({"success": False, "error": "Function not found"})
+            t_result = time.perf_counter()
+            _send_response({"success": True, "result": result}, protocol)
+            t_sent = time.perf_counter()
+            print(
+                f"Replied ({protocol}) | "
+                f"handler={(t_result - t_handle) * 1000:.1f}ms, "
+                f"encode_send={(t_sent - t_result) * 1000:.1f}ms"
+            )
+        else:
+            _send_response(
+                {"success": False, "error": "Function not found"}, protocol
+            )
+    except Exception as exc:
+        print("RPC Error:", exc)
+        protocol = locals().get("protocol", "json")
+        _send_response({"success": False, "error": str(exc)}, protocol)

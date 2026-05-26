@@ -12,6 +12,7 @@ import zmq
 from grasp_gen.grasp_server import GraspGenSampler, load_grasp_cfg
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
+import zlib
 
 msgpack_numpy.patch()
 
@@ -198,9 +199,18 @@ def _draw_overlay(
 # RPC functions
 # ---------------------------------------------------------------------------
 
-def view_image_point_cloud_point(image, point_cloud, point):
+def view_image_point_cloud_point(image, point_cloud, point, bbox=None):
     t_start = time.perf_counter()
     rgb = _decode_image_payload(image)
+    client_frame = image.get("frame") if isinstance(image, dict) else None
+    client_checksum = image.get("checksum") if isinstance(image, dict) else None
+    server_checksum = zlib.crc32(np.ascontiguousarray(rgb).tobytes()) & 0xFFFFFFFF
+
+    print(
+        f"server image client_frame={client_frame} "
+        f"client_crc={client_checksum} server_crc={server_checksum}"
+    )
+
     pc = _decode_point_cloud(point_cloud)  # (H_c, W_c, 3) organized
     t_decode = time.perf_counter()
 
@@ -216,24 +226,31 @@ def view_image_point_cloud_point(image, point_cloud, point):
     total_finite = int(finite_map.sum())
     if total_finite > 0:
         valid_flat = pc[finite_map] if pc.ndim == 3 else pc[finite_map]
-        print(
-            f"Received 2D point: ({u}, {v}), cloud shape: {pc.shape}, "
-            f"total finite pts: {total_finite}, "
-            f"z range: {valid_flat[:,2].min():.3f}-{valid_flat[:,2].max():.3f}m"
-        )
-    else:
-        print(
-            f"Received 2D point: ({u}, {v}), cloud shape: {pc.shape}, "
-            "total finite pts: 0"
-        )
+    #     print(
+    #         f"Received 2D point: ({u}, {v}), cloud shape: {pc.shape}, "
+    #         f"total finite pts: {total_finite}, "
+    #         f"z range: {valid_flat[:,2].min():.3f}-{valid_flat[:,2].max():.3f}m"
+    #     )
+    # else:
+    #     print(
+    #         f"Received 2D point: ({u}, {v}), cloud shape: {pc.shape}, "
+    #         "total finite pts: 0"
+    #     )
 
     with torch.inference_mode():
         _predictor.set_image(rgb)
-        masks, scores, _ = _predictor.predict(
-            point_coords=np.array([[u, v]]),
-            point_labels=np.array([1]),
-            multimask_output=False,
-        )
+        if bbox is not None:
+            box = np.array(bbox, dtype=np.float32).reshape(1, 4)  # [x1,y1,x2,y2]
+            masks, scores, _ = _predictor.predict(
+                box=box,
+                multimask_output=False,
+            )
+        else:
+            masks, scores, _ = _predictor.predict(
+                point_coords=np.array([[u, v]]),
+                point_labels=np.array([1]),
+                multimask_output=False,
+            )
     t_sam = time.perf_counter()
 
     mask = masks[0].astype(np.uint8)  # (H_img, W_img)
@@ -247,13 +264,11 @@ def view_image_point_cloud_point(image, point_cloud, point):
         masked_pixels = int(mask_resized.sum())
         pts = pc[mask_resized == 1]  # (M, 3)
         finite_mask = np.isfinite(pts).all(axis=1)
-        z_mask = pts[:, 2] > 0
         print(
             f"Cloud ({H_c}x{W_c}), image ({rgb.shape[0]}x{rgb.shape[1]}), "
-            f"masked_pixels={masked_pixels}, "
-            f"finite={finite_mask.sum()}, z>0={(finite_mask & z_mask).sum()}"
+            f"masked_pixels={masked_pixels}, finite={finite_mask.sum()}"
         )
-        pts = pts[finite_mask & z_mask]
+        pts = pts[finite_mask]
 
         # Textureless surfaces (e.g. cubes) cause ZED depth NaN inside the mask.
         # Fall back to dilated mask to capture valid boundary/edge points.
@@ -261,7 +276,7 @@ def view_image_point_cloud_point(image, point_cloud, point):
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
             mask_dilated = cv2.dilate(mask_resized, kernel)
             pts_d = pc[mask_dilated == 1]
-            fm = np.isfinite(pts_d).all(axis=1) & (pts_d[:, 2] > 0)
+            fm = np.isfinite(pts_d).all(axis=1)
             pts = pts_d[fm]
             print(f"Dilation fallback: {len(pts)} boundary points")
     else:
@@ -283,7 +298,7 @@ def view_image_point_cloud_point(image, point_cloud, point):
             _grasp_sampler,
             grasp_threshold=-1.0,
             num_grasps=GRASPGEN_NUM_GRASPS,
-            topk_num_grasps=GRASPGEN_TOPK,
+            topk_num_grasps=1,
             min_grasps=GRASPGEN_MIN_GRASPS,
             max_tries=GRASPGEN_MAX_TRIES,
             remove_outliers=GRASPGEN_REMOVE_OUTLIERS,
@@ -314,7 +329,7 @@ def view_image_point_cloud_point(image, point_cloud, point):
             H_c, W_c = pc.shape[:2]
             scale_r = rgb.shape[0] / H_c
             scale_c = rgb.shape[1] / W_c
-            seg_map = (mask_resized == 1) & finite_map & (pc[:, :, 2] > 0)
+            seg_map = (mask_resized == 1) & finite_map
             coords = np.column_stack(np.where(seg_map))
             if len(coords) > RPC_MAX_MARKERS:
                 step = int(np.ceil(len(coords) / RPC_MAX_MARKERS))

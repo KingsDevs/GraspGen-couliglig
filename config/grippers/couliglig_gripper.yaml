@@ -1,0 +1,54 @@
+# Couliglig custom parallel jaw gripper
+# URDF: /home/karlshane/GraspGen-couliglig/urdf/gripper/robot.urdf
+#
+# Axis convention derived from URDF inspection:
+#   URDF -X axis -> GraspGen +Z (approach direction)
+#   URDF +Y axis -> GraspGen +X (finger closing direction)
+#   URDF -Z axis -> GraspGen +Y (third axis)
+# Fingertips measured at URDF X=-0.1044 from end_effector origin -> depth = 0.1044 m
+
+_target_: graspsampling.hands.URDFHand
+file_name: /home/karlshane/GraspGen-couliglig/urdf/gripper/robot.urdf
+grasp_frame: end_effector
+approach_direction: [0., 0., 1.]
+
+# TODO: Verify the maximum aperture (max gap between finger inner surfaces).
+# The URDF joint limits (-1, 1) are placeholders. Measure on the physical gripper.
+maximum_aperture: 0.05
+width: 0.05
+
+# Distance from base link origin to fingertip along approach axis (computed)
+depth: 0.1044
+
+# TODO: Replace with actual joint values for fully-open and fully-closed states.
+# Joint order matches the URDF: [l, r]
+open_configurations:
+  - [0.025, 0.025]
+close_configurations:
+  - [0.0, 0.0]
+
+# Box approximating the volume between the fingers (where the object sits).
+# Centered halfway down the fingers along the approach axis.
+closing_regions:
+  - extents: [0.05, 0.028, 0.044]
+    translation: [0.0, 0.0, 0.082]
+    rotation_wxyz: [1., 0., 0., 0.]
+
+# Contact pads on the inner finger surfaces, expressed in GraspGen frame
+# after the transform_offset is applied.
+contact_points:
+  - link_name: finger
+    location: [-0.025, 0.0, 0.082]
+    normal: [1., 0., 0.]
+  - link_name: finger_2
+    location: [0.025, 0.0, 0.082]
+    normal: [-1., 0., 0.]
+
+# Rotation from URDF asset frame to GraspGen convention.
+# Quaternion (xyzw) corresponds to:
+#   R = [[ 0,  1,  0],
+#        [ 0,  0, -1],
+#        [-1,  0,  0]]
+transform_offset_from_asset_to_graspgen_convention: [[0.0, 0.0, 0.0], [0.5, 0.5, -0.5, 0.5]]
+
+symmetric_antipodal: True

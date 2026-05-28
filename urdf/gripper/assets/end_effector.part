@@ -1,0 +1,13 @@
+{
+    "configuration": "default",
+    "documentId": "c8a54d6276cb8caa1bed256e",
+    "documentMicroversion": "da5026f723e14c285fad0099",
+    "elementId": "50839f067e97415692d03ba6",
+    "fullConfiguration": "default",
+    "id": "McmBiWRBrhfmCMRNQ",
+    "isStandardContent": false,
+    "name": "end_effector <1>",
+    "partId": "RiDD",
+    "suppressed": false,
+    "type": "Part"
+}

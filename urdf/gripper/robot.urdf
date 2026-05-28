@@ -1,0 +1,93 @@
+<?xml version="1.0" ?>
+<!-- Generated using onshape-to-robot -->
+<!-- Onshape https://cad.onshape.com/documents/c8a54d6276cb8caa1bed256e/w/1e7ce577be904a677108135e/e/307e96af6947dd3ee8f44b51 -->
+<robot name="gripper">
+  <!-- Link end_effector -->
+  <link name="end_effector">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="1e-09"/>
+      <inertia ixx="1e-09" ixy="0" ixz="0" iyy="1e-09" iyz="0" izz="1e-09"/>
+    </inertial>
+    <!-- Part end_effector -->
+    <visual>
+      <origin xyz="0 0 0" rpy="-1.5708 -0 1.5708"/>
+      <geometry>
+        <mesh filename="assets/end_effector.stl"/>
+      </geometry>
+      <material name="end_effector_material">
+        <color rgba="0.498039 0.498039 0.498039 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="-1.5708 -0 1.5708"/>
+      <geometry>
+        <mesh filename="assets/end_effector.stl"/>
+      </geometry>
+    </collision>
+  </link>
+  <!-- Link finger -->
+  <link name="finger">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="1e-09"/>
+      <inertia ixx="1e-09" ixy="0" ixz="0" iyy="1e-09" iyz="0" izz="1e-09"/>
+    </inertial>
+    <!-- Part finger -->
+    <visual>
+      <origin xyz="-0.01035 0.0058 -0.0309" rpy="-1.5708 -1.5708 0"/>
+      <geometry>
+        <mesh filename="assets/finger.stl"/>
+      </geometry>
+      <material name="finger_material">
+        <color rgba="0.0431373 0.215686 0.403922 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="-0.01035 0.0058 -0.0309" rpy="-1.5708 -1.5708 0"/>
+      <geometry>
+        <mesh filename="assets/finger.stl"/>
+      </geometry>
+    </collision>
+  </link>
+  <!-- Joint from end_effector to finger -->
+  <joint name="l" type="prismatic">
+    <origin xyz="-0.0720576 -0.0248088 0.0172625" rpy="1.5708 1.5708 0"/>
+    <parent link="end_effector"/>
+    <child link="finger"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10" velocity="10" lower="-1" upper="1"/>
+  </joint>
+  <!-- Link finger_2 -->
+  <link name="finger_2">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="1e-09"/>
+      <inertia ixx="1e-09" ixy="0" ixz="0" iyy="1e-09" iyz="0" izz="1e-09"/>
+    </inertial>
+    <!-- Part finger_2 -->
+    <visual>
+      <origin xyz="-0.01035 0.0058 -0.0309" rpy="-1.5708 -1.5708 0"/>
+      <geometry>
+        <mesh filename="assets/finger.stl"/>
+      </geometry>
+      <material name="finger_2_material">
+        <color rgba="0.0431373 0.215686 0.403922 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="-0.01035 0.0058 -0.0309" rpy="-1.5708 -1.5708 0"/>
+      <geometry>
+        <mesh filename="assets/finger.stl"/>
+      </geometry>
+    </collision>
+  </link>
+  <!-- Joint from end_effector to finger_2 -->
+  <joint name="r" type="prismatic">
+    <origin xyz="-0.0720576 0.0253912 0.0104625" rpy="-1.5708 -1.5708 0"/>
+    <parent link="end_effector"/>
+    <child link="finger_2"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10" velocity="10" lower="-1" upper="1"/>
+  </joint>
+</robot>

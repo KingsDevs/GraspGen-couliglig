@@ -34,14 +34,15 @@ GRASPGEN_CONFIG = os.getenv(
 )
 GRASPGEN_NUM_GRASPS = int(os.getenv("GRASPGEN_NUM_GRASPS", "100"))
 GRASPGEN_TOPK = int(os.getenv("GRASPGEN_TOPK", "20"))
-GRASPGEN_MIN_GRASPS = int(os.getenv("GRASPGEN_MIN_GRASPS", "1"))
-GRASPGEN_MAX_TRIES = int(os.getenv("GRASPGEN_MAX_TRIES", "1"))
+GRASPGEN_MIN_GRASPS = int(os.getenv("GRASPGEN_MIN_GRASPS", "10"))
+GRASPGEN_MAX_TRIES = int(os.getenv("GRASPGEN_MAX_TRIES", "3"))
 GRASPGEN_REMOVE_OUTLIERS = os.getenv("GRASPGEN_REMOVE_OUTLIERS", "1").lower() not in {
     "0",
     "false",
     "no",
 }
 GRASPGEN_MIN_POINTS = int(os.getenv("GRASPGEN_MIN_POINTS", "32"))
+GRASPGEN_SELECTION = os.getenv("GRASPGEN_SELECTION", "spatial_median").lower()
 
 print("Loading SAM2 ...")
 _sam2_model = build_sam2(SAM2_CONFIG, SAM2_CHECKPOINT, device="cuda")
@@ -55,7 +56,8 @@ print(
     "GraspGen loaded "
     f"(num_grasps={GRASPGEN_NUM_GRASPS}, topk={GRASPGEN_TOPK}, "
     f"min_grasps={GRASPGEN_MIN_GRASPS}, max_tries={GRASPGEN_MAX_TRIES}, "
-    f"remove_outliers={GRASPGEN_REMOVE_OUTLIERS})"
+    f"remove_outliers={GRASPGEN_REMOVE_OUTLIERS}, "
+    f"selection={GRASPGEN_SELECTION})"
 )
 
 # ---------------------------------------------------------------------------
@@ -142,8 +144,24 @@ def _empty_grasp_result(reason: str) -> dict:
     }
 
 
+def _select_grasp_index(grasps: np.ndarray, confidences: np.ndarray) -> int:
+    """Pick a single grasp index from the candidates.
+
+    "max_confidence" returns the top-scored grasp (jittery across diffusion runs).
+    "spatial_median" picks the grasp closest to the median translation of the
+    top-K, which is more stable across stochastic samples.
+    """
+    if GRASPGEN_SELECTION == "max_confidence" or len(grasps) <= 1:
+        return int(np.argmax(confidences))
+
+    positions = grasps[:, :3, 3]
+    median_position = np.median(positions, axis=0)
+    distances = np.linalg.norm(positions - median_position, axis=1)
+    return int(np.argmin(distances))
+
+
 def _format_best_grasp(grasps: np.ndarray, confidences: np.ndarray) -> dict:
-    best_idx = int(np.argmax(confidences))
+    best_idx = _select_grasp_index(grasps, confidences)
     pose = grasps[best_idx].astype(np.float32, copy=False)
     confidence = float(confidences[best_idx])
     return {
@@ -153,6 +171,7 @@ def _format_best_grasp(grasps: np.ndarray, confidences: np.ndarray) -> dict:
             "rotation_matrix": pose[:3, :3].astype(np.float32, copy=False),
             "confidence": confidence,
             "candidate_index": best_idx,
+            "selection": GRASPGEN_SELECTION,
             "frame": "zed_camera",
             "units": "meters",
         },
@@ -298,7 +317,7 @@ def view_image_point_cloud_point(image, point_cloud, point, bbox=None):
             _grasp_sampler,
             grasp_threshold=-1.0,
             num_grasps=GRASPGEN_NUM_GRASPS,
-            topk_num_grasps=1,
+            topk_num_grasps=GRASPGEN_TOPK,
             min_grasps=GRASPGEN_MIN_GRASPS,
             max_tries=GRASPGEN_MAX_TRIES,
             remove_outliers=GRASPGEN_REMOVE_OUTLIERS,

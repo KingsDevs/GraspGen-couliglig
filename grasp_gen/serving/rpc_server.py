@@ -12,6 +12,7 @@ import zmq
 from grasp_gen.grasp_server import GraspGenSampler, load_grasp_cfg
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
+from sklearn.cluster import DBSCAN
 import zlib
 
 msgpack_numpy.patch()
@@ -43,6 +44,17 @@ GRASPGEN_REMOVE_OUTLIERS = os.getenv("GRASPGEN_REMOVE_OUTLIERS", "1").lower() no
 }
 GRASPGEN_MIN_POINTS = int(os.getenv("GRASPGEN_MIN_POINTS", "32"))
 GRASPGEN_SELECTION = os.getenv("GRASPGEN_SELECTION", "spatial_median").lower()
+
+# 3D cleanup of the masked cloud: SAM2 gives a 2D silhouette, so mask-edge bleed
+# and stereo flying pixels leave table/background points attached. DBSCAN keeps
+# only the dominant 3D cluster before the cloud reaches GraspGen.
+GRASPGEN_DBSCAN = os.getenv("GRASPGEN_DBSCAN", "1").lower() not in {
+    "0",
+    "false",
+    "no",
+}
+DBSCAN_EPS = float(os.getenv("DBSCAN_EPS", "0.01"))  # meters
+DBSCAN_MIN_SAMPLES = int(os.getenv("DBSCAN_MIN_SAMPLES", "10"))
 
 print("Loading SAM2 ...")
 _sam2_model = build_sam2(SAM2_CONFIG, SAM2_CHECKPOINT, device="cuda")
@@ -218,6 +230,46 @@ def _draw_overlay(
 # RPC functions
 # ---------------------------------------------------------------------------
 
+def _largest_object_cluster(pts, seed_xyz=None):
+    """Keep the dominant 3D cluster of the masked points.
+
+    A 2D SAM2 mask projected into 3D drags in table/background points along the
+    silhouette edge and stereo flying pixels at depth discontinuities. DBSCAN
+    separates those into distinct clusters; we keep one and drop the rest.
+
+    Args:
+        pts: (N, 3) finite points.
+        seed_xyz: optional (3,) anchor — the 3D point under the user's click.
+            When given, the cluster whose nearest member is closest to the seed
+            is kept, so a click on a small object beside a large background blob
+            still wins. When None (e.g. bbox prompt), the largest cluster wins.
+
+    Returns:
+        (M, 3) filtered points. Falls back to the input unchanged when clustering
+        is disabled, the cloud is too small, or every point is labelled noise.
+    """
+    if not GRASPGEN_DBSCAN or len(pts) < DBSCAN_MIN_SAMPLES:
+        return pts
+
+    labels = DBSCAN(eps=DBSCAN_EPS, min_samples=DBSCAN_MIN_SAMPLES).fit(pts).labels_
+    valid = labels >= 0
+    if not valid.any():
+        return pts  # all noise — don't throw the whole cloud away
+
+    if seed_xyz is not None and np.all(np.isfinite(seed_xyz)):
+        best_label, best_d = None, np.inf
+        for lab in np.unique(labels[valid]):
+            d = np.linalg.norm(pts[labels == lab] - seed_xyz, axis=1).min()
+            if d < best_d:
+                best_d, best_label = d, lab
+        keep = labels == best_label
+    else:
+        counts = np.bincount(labels[valid])
+        keep = labels == int(counts.argmax())
+
+    return pts[keep]
+
+
 def view_image_point_cloud_point(image, point_cloud, point, bbox=None):
     t_start = time.perf_counter()
     rgb = _decode_image_payload(image)
@@ -277,6 +329,7 @@ def view_image_point_cloud_point(image, point_cloud, point, bbox=None):
     print(f"SAM2 mask coverage={mask.mean() * 100:.1f}%, score={score:.3f}")
 
     # Apply mask to organized cloud — resize mask to match cloud's strided dims
+    seed_xyz = None  # 3D anchor under the user's click, for cluster selection
     if pc.ndim == 3:
         H_c, W_c = pc.shape[:2]
         mask_resized = cv2.resize(mask, (W_c, H_c), interpolation=cv2.INTER_NEAREST)
@@ -289,6 +342,14 @@ def view_image_point_cloud_point(image, point_cloud, point, bbox=None):
         )
         pts = pts[finite_mask]
 
+        # 3D point under the click (image coords -> cloud coords), if it has depth.
+        if bbox is None:
+            u_c = max(0, min(int(round(u * W_c / rgb.shape[1])), W_c - 1))
+            v_c = max(0, min(int(round(v * H_c / rgb.shape[0])), H_c - 1))
+            cand = pc[v_c, u_c]
+            if np.all(np.isfinite(cand)):
+                seed_xyz = cand
+
         # Textureless surfaces (e.g. cubes) cause ZED depth NaN inside the mask.
         # Fall back to dilated mask to capture valid boundary/edge points.
         if len(pts) == 0 and masked_pixels > 0:
@@ -300,6 +361,15 @@ def view_image_point_cloud_point(image, point_cloud, point, bbox=None):
             print(f"Dilation fallback: {len(pts)} boundary points")
     else:
         pts = pc  # flat cloud — return as-is
+
+    # Drop table/background contamination left by the 2D mask.
+    if len(pts) >= DBSCAN_MIN_SAMPLES:
+        n_before = len(pts)
+        pts = _largest_object_cluster(pts, seed_xyz)
+        print(
+            f"DBSCAN cluster: {n_before} -> {len(pts)} points "
+            f"(seed={'yes' if seed_xyz is not None else 'no'})"
+        )
 
     t_mask = time.perf_counter()
 

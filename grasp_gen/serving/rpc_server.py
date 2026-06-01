@@ -56,6 +56,19 @@ GRASPGEN_DBSCAN = os.getenv("GRASPGEN_DBSCAN", "1").lower() not in {
 DBSCAN_EPS = float(os.getenv("DBSCAN_EPS", "0.01"))  # meters
 DBSCAN_MIN_SAMPLES = int(os.getenv("DBSCAN_MIN_SAMPLES", "10"))
 
+# Support-plane removal: DBSCAN can't split an object from the surface it rests
+# on (they're spatially connected through the contact region). RANSAC fits the
+# dominant plane (table/floor) and drops it before clustering. Runs only when a
+# plane explains >= PLANE_MIN_RATIO of the points and the click isn't on it.
+GRASPGEN_PLANE_REMOVAL = os.getenv("GRASPGEN_PLANE_REMOVAL", "1").lower() not in {
+    "0",
+    "false",
+    "no",
+}
+PLANE_DIST_THRESH = float(os.getenv("PLANE_DIST_THRESH", "0.005"))  # meters
+PLANE_MIN_RATIO = float(os.getenv("PLANE_MIN_RATIO", "0.25"))
+PLANE_RANSAC_ITERS = int(os.getenv("PLANE_RANSAC_ITERS", "100"))
+
 print("Loading SAM2 ...")
 _sam2_model = build_sam2(SAM2_CONFIG, SAM2_CHECKPOINT, device="cuda")
 _predictor = SAM2ImagePredictor(_sam2_model)
@@ -230,6 +243,51 @@ def _draw_overlay(
 # RPC functions
 # ---------------------------------------------------------------------------
 
+def _remove_support_plane(pts, seed_xyz=None):
+    """RANSAC-fit the dominant plane and drop its inliers (the floor/table).
+
+    DBSCAN can't separate an object from the surface it touches because they're
+    one connected component. Removing the support plane cuts that link so the
+    object survives clustering on its own.
+
+    Skips removal (returns pts unchanged) when no plane explains at least
+    PLANE_MIN_RATIO of the points, when the clicked point lies on the best plane
+    (the user is grasping a flat object, not the floor), or when removal would
+    leave too few points to grasp.
+    """
+    n = len(pts)
+    if not GRASPGEN_PLANE_REMOVAL or n < 3 * DBSCAN_MIN_SAMPLES:
+        return pts
+
+    rng = np.random.default_rng()
+    best_inliers, best_count, best_plane = None, 0, None
+    for _ in range(PLANE_RANSAC_ITERS):
+        p0, p1, p2 = pts[rng.choice(n, 3, replace=False)]
+        normal = np.cross(p1 - p0, p2 - p0)
+        nn = np.linalg.norm(normal)
+        if nn < 1e-9:
+            continue
+        normal = normal / nn
+        inliers = np.abs((pts - p0) @ normal) < PLANE_DIST_THRESH
+        count = int(inliers.sum())
+        if count > best_count:
+            best_count, best_inliers, best_plane = count, inliers, (normal, p0)
+
+    if best_inliers is None or best_count < PLANE_MIN_RATIO * n:
+        return pts  # no dominant plane to remove
+
+    # Abort if the click sits on the plane — that's the object, not the floor.
+    if seed_xyz is not None and np.all(np.isfinite(seed_xyz)):
+        normal, p0 = best_plane
+        if abs(float((seed_xyz - p0) @ normal)) < PLANE_DIST_THRESH:
+            return pts
+
+    keep = ~best_inliers
+    if int(keep.sum()) < DBSCAN_MIN_SAMPLES:
+        return pts
+    return pts[keep]
+
+
 def _largest_object_cluster(pts, seed_xyz=None):
     """Keep the dominant 3D cluster of the masked points.
 
@@ -362,13 +420,16 @@ def view_image_point_cloud_point(image, point_cloud, point, bbox=None):
     else:
         pts = pc  # flat cloud — return as-is
 
-    # Drop table/background contamination left by the 2D mask.
+    # Drop table/background contamination left by the 2D mask: first remove the
+    # support plane the object rests on, then keep the dominant 3D cluster.
     if len(pts) >= DBSCAN_MIN_SAMPLES:
         n_before = len(pts)
+        pts = _remove_support_plane(pts, seed_xyz)
+        n_plane = len(pts)
         pts = _largest_object_cluster(pts, seed_xyz)
         print(
-            f"DBSCAN cluster: {n_before} -> {len(pts)} points "
-            f"(seed={'yes' if seed_xyz is not None else 'no'})"
+            f"3D cleanup: {n_before} -> {n_plane} (plane) -> {len(pts)} (cluster) "
+            f"points (seed={'yes' if seed_xyz is not None else 'no'})"
         )
 
     t_mask = time.perf_counter()

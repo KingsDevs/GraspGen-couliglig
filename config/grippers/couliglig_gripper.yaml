@@ -1,5 +1,5 @@
 # Couliglig custom parallel jaw gripper
-# URDF: /home/karlshane/GraspGen-couliglig/urdf/gripper/robot.urdf
+# URDF: /home/couliglig/GraspGen-couliglig/urdf/gripper/robot.urdf
 #
 # Axis convention derived from URDF inspection:
 #   URDF -X axis -> GraspGen +Z (approach direction)
@@ -8,40 +8,47 @@
 # Fingertips measured at URDF X=-0.1044 from end_effector origin -> depth = 0.1044 m
 
 _target_: graspsampling.hands.URDFHand
-file_name: /home/karlshane/GraspGen-couliglig/urdf/gripper/robot.urdf
+file_name: /home/couliglig/GraspGen-couliglig/urdf/gripper/robot.urdf
 grasp_frame: end_effector
 approach_direction: [0., 0., 1.]
 
-# TODO: Verify the maximum aperture (max gap between finger inner surfaces).
-# The URDF joint limits (-1, 1) are placeholders. Measure on the physical gripper.
-maximum_aperture: 0.05
-width: 0.05
+# Maximum aperture (max gap between finger inner surfaces) measured on the
+# physical gripper = 1.95 cm. All values below were derived from this together
+# with the URDF finger geometry: gap(q) = 2*q - 0.0116 (q = per-finger prismatic
+# travel, m). See scripts/render_gripper_check.py to re-verify visually.
+maximum_aperture: 0.0195
+width: 0.0195
 
-# Distance from base link origin to fingertip along approach axis (computed)
+# Distance from base link origin to fingertip along approach axis (Z max of the
+# finger mesh = 0.1044, confirmed).
 depth: 0.1044
 
-# TODO: Replace with actual joint values for fully-open and fully-closed states.
-# Joint order matches the URDF: [l, r]
+# Joint values for fully-open and fully-closed states. Joint order = URDF [l, r].
+#   open : q = (0.0195 + 0.0116)/2 = 0.01555  -> inner-face gap = 0.0195 m (measured)
+#   close: q = 0.0058                         -> inner faces just touch (gap = 0)
+# TODO: confirm these against the real joint encoder limits / datasheet.
 open_configurations:
-  - [0.025, 0.025]
+  - [0.0156, 0.0156]
 close_configurations:
-  - [0.0, 0.0]
+  - [0.0058, 0.0058]
 
-# Box approximating the volume between the fingers (where the object sits).
-# Centered halfway down the fingers along the approach axis.
+# Box approximating the volume between the fingers (where the object sits), in
+# the GraspGen frame. Sized to the open jaws: X = aperture, Y/Z = finger-pad
+# span. Finger pads occupy Y in [-0.0276, 0] and Z in [0.0604, 0.1044], so the
+# box is centered at (0, -0.0139, 0.0824).
 closing_regions:
-  - extents: [0.05, 0.028, 0.044]
-    translation: [0.0, 0.0, 0.082]
+  - extents: [0.0195, 0.0275, 0.0441]
+    translation: [0.0, -0.0139, 0.0824]
     rotation_wxyz: [1., 0., 0., 0.]
 
-# Contact pads on the inner finger surfaces, expressed in GraspGen frame
-# after the transform_offset is applied.
+# Contact pads on the inner finger surfaces at the open pose (X = +/-aperture/2,
+# at the pad center in Y and Z), expressed in the GraspGen frame.
 contact_points:
   - link_name: finger
-    location: [-0.025, 0.0, 0.082]
+    location: [-0.00975, -0.0139, 0.0824]
     normal: [1., 0., 0.]
   - link_name: finger_2
-    location: [0.025, 0.0, 0.082]
+    location: [0.00975, -0.0139, 0.0824]
     normal: [-1., 0., 0.]
 
 # Rotation from URDF asset frame to GraspGen convention.

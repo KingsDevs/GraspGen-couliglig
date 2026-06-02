@@ -56,7 +56,8 @@
     <parent link="end_effector"/>
     <child link="finger"/>
     <axis xyz="0 0 1"/>
-    <limit effort="10" velocity="10" lower="-1" upper="1"/>
+    <!-- Stroke from measured 1.95cm max aperture: q in [0.0058 (closed), 0.0156 (open)] -->
+    <limit effort="10" velocity="10" lower="0.0058" upper="0.0156"/>
   </joint>
   <!-- Link finger_2 -->
   <link name="finger_2">
@@ -88,6 +89,7 @@
     <parent link="end_effector"/>
     <child link="finger_2"/>
     <axis xyz="0 0 1"/>
-    <limit effort="10" velocity="10" lower="-1" upper="1"/>
+    <!-- Stroke from measured 1.95cm max aperture: q in [0.0058 (closed), 0.0156 (open)] -->
+    <limit effort="10" velocity="10" lower="0.0058" upper="0.0156"/>
   </joint>
 </robot>

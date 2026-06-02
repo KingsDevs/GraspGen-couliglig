@@ -62,7 +62,7 @@ def get_gripper_offset_bins():
 
     The width here must stay in sync with the YAML 'width' field.
     """
-    width = 0.05
+    width = 0.0195
     offset_bins = list(np.linspace(0.0, width, 11))
 
     offset_bin_weights = [

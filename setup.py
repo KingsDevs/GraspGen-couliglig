@@ -14,8 +14,12 @@ setup(
     packages=find_packages(),
     include_package_data=True,
     install_requires=[
-        line for line in open('requirements.txt').readlines()
-        if "@" not in line
+        line
+        for line in (l.split("#", 1)[0].strip() for l in open("requirements.txt"))
+        # skip blanks, inline comments, pip options (-r, --find-links, --extra-index-url),
+        # and direct/VCS references (e.g. "pkg @ file://..."), which are not valid
+        # install_requires specifiers
+        if line and not line.startswith("-") and "@" not in line
     ],
     description="GraspGen",
     author="",

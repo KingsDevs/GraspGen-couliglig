@@ -26,51 +26,68 @@ classifiers = [
 
 dependencies = [
     # Core PyTorch dependencies with CUDA support
+    # (PyPI linux wheels for these versions are built against CUDA 12.1)
     "torch==2.1.0",
-    "torchvision==0.16.0", 
-    
-    # PyTorch Geometric dependencies (installed from PyG wheel index)  
-    "torch-cluster",
-    "torch-scatter", 
-    "torch-geometric",
-    
-    # Core dependencies from requirements.txt
-    "pickle5",
-    "h5py",
-    "hydra-core", 
-    "matplotlib",
-    "meshcat",
+    "torchvision==0.16.0",
+
+    # PyTorch Geometric stack (installed from the PyG find-links index, see [tool.uv])
+    "torch-cluster==1.6.3",
+    "torch-scatter==2.1.2",
+    "torch-geometric==2.7.0",
+
+    # Sparse conv
+    "spconv-cu120==2.3.6",
+
+    # Numerics / data
     "numpy==1.26.4",
-    "webdataset",
-    "scikit-learn",
-    "scipy",
-    "tensorboard",
-    "trimesh==4.5.3",
-    "transformers",
-    "tensordict",
+    "scipy==1.15.3",
+    "scikit-learn==1.7.2",
+    "h5py==3.16.0",
+    "pickle5==0.0.12",
+    "webdataset==1.0.2",
+    "tensordict==0.12.3",
+    "sharedarray==3.2.4",
+
+    # ML / models
+    "transformers==4.48.3",
     "diffusers==0.11.1",
     "timm==1.0.15",
     "huggingface-hub==0.25.2",
-    "PyOpenGL==3.1.0",
-    "addict",
-    "spconv-cu120",
-    "yapf==0.40.1",
-    "tensorboardx", 
-    "sharedarray",
+
+    # Config / logging
+    "hydra-core==1.4.0.dev1",
+    "omegaconf==2.4.0.dev11",
+    "addict==2.4.0",
+    "tensorboard==2.20.0",
+    "tensorboardx==2.6.5",
+
+    # Geometry / mesh / robot models
+    "trimesh==4.5.3",
     "yourdfpy==0.0.56",
-    
-    # Additional dependencies from pip installation
-    "pyrender",
-    "scene-synthesizer[recommend]",
-    "imageio",
-    "pytest",
-    "viser",
-    
+    "scene-synthesizer[recommend]==1.15.0",
+    "usd-core==26.5",
+
+    # Rendering / visualization
+    "pyrender==0.1.45",
+    "PyOpenGL==3.1.0",
+    "meshcat==0.3.2",
+    "viser==1.0.28",
+    "matplotlib==3.10.9",
+    "imageio==2.37.3",
+    "opencv-python==4.10.0.84",  # last line allowing numpy<2 (numpy==1.26.4 pin)
+    "pillow==12.2.0",
+
     # ZMQ serving
-    "pyzmq",
-    "msgpack",
-    "msgpack-numpy",
-    
+    "pyzmq==27.1.0",
+    "msgpack==1.1.2",
+    "msgpack-numpy==0.4.8",
+
+    # Tooling / misc
+    "tqdm==4.67.3",
+    "ipython==8.39.0",
+    "yapf==0.40.1",
+    "pytest==9.0.3",
+
     # Pin setuptools to a version that still includes pkg_resources
     # (required by torch==2.1.0 cpp_extension for building CUDA extensions like pointnet2_ops)
     "setuptools>=45,<78",
@@ -95,9 +112,9 @@ dev = [
     "flake8",
 ]
 serve = [
-    "pyzmq",
-    "msgpack",
-    "msgpack-numpy",
+    "pyzmq==27.1.0",
+    "msgpack==1.1.2",
+    "msgpack-numpy==0.4.8",
 ]
 
 [tool.setuptools]

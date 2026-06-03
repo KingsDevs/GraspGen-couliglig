@@ -732,7 +732,9 @@ def render_pc(
     object_asset_data: ObjectGraspDataset, num_points: int, mesh_mode: bool = True
 ) -> Tuple[Dict, DataLoaderError]:
     xyz = None
-    max_partial_pc_size = 0.075
+    # Lowered from 0.075 (GraspGen default tuned for ~10cm objects) to support
+    # the small Couliglig objects (8-45mm). Rejects only truly degenerate PCs.
+    max_partial_pc_size = float(os.environ.get("GG_MAX_PARTIAL_PC_SIZE", 0.003))
 
     if mesh_mode:
         # Sample points from mesh surface

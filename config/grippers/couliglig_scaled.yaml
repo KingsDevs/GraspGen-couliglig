@@ -1,0 +1,53 @@
+# Couliglig custom parallel jaw gripper — UNIFORMLY SCALED by S=7.
+#
+# This is a pure unit change of config/grippers/couliglig_gripper.yaml: every
+# length field is multiplied by S=7 so the whole grasping problem (objects +
+# grasp transforms + gripper) lands in the size range GraspGen's data pipeline is
+# tuned for (~10 cm objects / ~8.5 cm grippers). Rotations/quaternions/normals are
+# scale-invariant and unchanged. Used with the S=7 scaled meshes
+# (~/gdg_work/objects_scaled) and scaled grasp dataset
+# (~/gdg_work/graspgen_dataset_scaled). At inference: scale the input object ×7
+# and divide predicted grasp translations ÷7. See SETUP_NOTES.md.
+#
+# Original (unscaled) -> scaled (×7):
+#   maximum_aperture 0.0195 -> 0.1365   depth 0.1044 -> 0.7308
+
+_target_: graspsampling.hands.URDFHand
+file_name: /home/couliglig/GraspGen-couliglig/urdf/gripper/robot.urdf
+grasp_frame: end_effector
+approach_direction: [0., 0., 1.]
+
+# Maximum aperture = 1.95 cm physical × 7.
+maximum_aperture: 0.1365
+width: 0.1365
+
+# Fingertip distance along approach axis = 0.1044 × 7.
+depth: 0.7308
+
+# Joint values for fully-open/closed states (per-finger prismatic travel × 7).
+open_configurations:
+  - [0.1092, 0.1092]
+close_configurations:
+  - [0.0406, 0.0406]
+
+# Box between the fingers, all dims × 7. extents 0.0195/0.0275/0.0441 × 7,
+# translation 0.0/-0.0139/0.0824 × 7.
+closing_regions:
+  - extents: [0.1365, 0.1925, 0.3087]
+    translation: [0.0, -0.0973, 0.5768]
+    rotation_wxyz: [1., 0., 0., 0.]
+
+# Contact pads on inner finger surfaces, locations × 7 (normals unchanged).
+contact_points:
+  - link_name: finger
+    location: [-0.06825, -0.0973, 0.5768]
+    normal: [1., 0., 0.]
+  - link_name: finger_2
+    location: [0.06825, -0.0973, 0.5768]
+    normal: [-1., 0., 0.]
+
+# Rotation from URDF asset frame to GraspGen convention. Translation is zero
+# (scale-invariant), quaternion unchanged.
+transform_offset_from_asset_to_graspgen_convention: [[0.0, 0.0, 0.0], [0.5, 0.5, -0.5, 0.5]]
+
+symmetric_antipodal: True

@@ -107,6 +107,67 @@ Test: `... graspdatagen:latest bash -lc 'cd /code/GraspDataGen && python
 scripts/graspgen/grasp_guess.py --gripper_config couliglig --object_file
 objects/rod.obj --num_grasps 64'` (objects must have a feature <= 19.5mm).
 
+## Scale-up for training (the small-object fix)
+
+GraspGen's data pipeline is hardcoded for ~10 cm objects / ~8.5 cm grippers.
+Couliglig is ~5x smaller everywhere (2 cm gripper, 1-4 cm objects), so during
+cache-building **all 21 objects were denylisted** (`203 "Point cloud is too small"`
+and `110 "No grasps are in the visible point cloud"`). Fix = a uniform **unit
+change**: scale objects + grasp transforms + gripper config all by the same factor
+**S = 7** (8 mm -> 56 mm, aperture 19.5 mm -> 136 mm, depth 0.1044 -> 0.7308 m), which
+preserves all relative geometry/physics but lands everything in GraspGen's expected
+size range. **At inference: scale the input object x7, then divide predicted grasp
+translations by 7** (rotations unchanged) to return to metric (object.scale stays
+1.0 — scale is baked into meshes + grasps, not GraspGen's object_scale, because the
+loader scales the mesh but NOT the grasps).
+
+Artifacts (new files; originals untouched):
+- `scripts/scale_objects.py` -> `~/gdg_work/objects_scaled/` (meshes x7).
+- `scripts/convert_datagen_to_graspgen.py --scale 7 --out ~/gdg_work/graspgen_dataset_scaled`
+  (grasp translations x7).
+- `config/grippers/couliglig_scaled.{yaml,py}` (all length fields x7; gripper mesh
+  `apply_scale(7)` so the discriminator's collision negatives are at the right scale).
+- `runs/train_couliglig_scaled_{gen,dis}.sh` (point at the scaled dataset/objects,
+  `GRIPPER_NAME=couliglig_scaled`).
+- `scripts/verify_scaled_grasp.py` (poses the scaled gripper at scaled grasps).
+Re-run: `rm -rf ~/gdg_work/results/cache/couliglig*` before each cache rebuild (the
+cache key is `dataset_name=couliglig`, shared across scaled/unscaled).
+
+### Two frame bugs that scale-up alone did NOT fix (root-caused here)
+Scale-up cleared the `203` errors but **all objects still hit `110`**. Two
+convention bugs were masking the data the whole time (the unscaled run was failing
+for the same reason — it never actually trained):
+
+1. **asset vs graspgen pose convention + the loader's hardcoded offset.** Each
+   gripper YAML has `transform_offset_from_asset_to_graspgen_convention` (asset->graspgen),
+   applied to the MESH as `mesh.apply_transform(offset)`. For a grasp POSE the correct
+   placement is `G_gg = G_asset @ inv(offset)` (frame duality), but the loader
+   (`grasp_gen/dataset/dataset_utils.py:609` `load_object_grasp_data`) **hardcodes
+   `loaded = json @ offset`**. This gripper's offset is a 120-deg rotation (`offset^3 = I`,
+   non-involutory), so a single factor doesn't cancel. The converter therefore bakes
+   `inv(offset)` **twice**: `json = G_asset @ inv(offset) @ inv(offset)` so the loader's
+   `@ offset` yields `G_gg`. (`G_asset = T_datagen @ Ry180`.)
+2. **Visibility TCP at the fingertip, not the grasp point.** The cache's
+   grasp-visibility filter keeps a grasp only if `grasp @ transform_from_base_link_to_tool_tcp`
+   lands within ~3 cm of the rendered point cloud. GraspGen defaults that TCP to
+   `translation([0,0,depth])` = the FINGERTIP, but Couliglig's fingertips overshoot the
+   grasped object by `depth - closing_z` (~15 cm scaled), so every grasp read as
+   "not visible". `config/grippers/couliglig_scaled.py:get_transform_from_base_link_to_tool_tcp`
+   overrides it to the **closing-region centre** (`[0, -0.0139, 0.0824] x 7`, where the
+   object actually sits). Used only by the visibility filter — does not touch control
+   points, the loss, or inference.
+
+With both fixes the cache builds **19/21 train + 6/6 valid** datapoints (only the two
+smallest spheres, 8/10 mm, still drop — hardest case for the partial-PC visibility
+check on a smooth sphere). Verified numerically: the closing-region TCP lands on the
+object surface for 23-88% of grasps (vs ~2% with the fingertip TCP). Smoke test:
+`bash runs/train_couliglig_scaled_gen.sh` -> cache builds, then real training epochs
+with loss decreasing (TensorBoard, ~1.6k steps): `train/loss/all_loss` 3.19 -> 1.92,
+`train/metric/error_trans_l2` 1.14 -> 0.87, `valid/metric/reconstruction/error_trans_l2`
+0.94 -> 0.27. NOTE: with only 19 train objects each epoch is < `print_freq=10` steps, so
+the console shows no per-step "Loss ..." line — read the TensorBoard event file under
+the log dir instead (or set `PRINT_FREQ=1`).
+
 ## Notes / TODO
 
 - `config/grippers/couliglig_gripper.yaml` had a hardcoded `/home/karlshane/...`

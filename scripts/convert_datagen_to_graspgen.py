@@ -42,7 +42,10 @@ from grasp_gen.robot import load_default_gripper_config, parse_offset_transform_
 SIM = "/home/couliglig/gdg_work/grasp_dataset/datagen_sim_data/couliglig"
 GRIPPER = "couliglig"
 OBJECT_ROOT = "/home/couliglig/GraspDataGen/objects"   # meshes already here
-VALID = {"cube_10mm", "cube_16mm", "sphere_12mm", "cyl_d10_l25mm", "m10_bolt", "m10_nut"}
+# Held-out validation = one mid-size per geometric family + one fastener.
+# Disjoint from train (see split logic below). Tests interpolation to unseen
+# sizes; the other fastener (m10_bolt) stays in train so the model sees the class.
+VALID = {"cube_14mm", "sphere_14mm", "cyl_d12_l40mm", "m10_nut"}
 
 RY180 = tra.rotation_matrix(np.pi, [0, 1, 0])
 
@@ -102,9 +105,10 @@ def main():
         out = {"object": {"file": obj_file, "scale": scale},
                "grasps": {"transforms": transforms, "object_in_gripper": mask}}
         json.dump(out, open(os.path.join(grasp_dir, f"{name}.json"), "w"))
-        train.append(obj_file)
         if name in VALID:
-            valid.append(obj_file)
+            valid.append(obj_file)          # held out: must NOT also be in train
+        else:
+            train.append(obj_file)
         print(f"  {name:16s} {len(transforms):4d} grasps ({pos} pos / {neg} neg)")
 
     open(os.path.join(splits_dir, "train.txt"), "w").write("\n".join(train) + "\n")

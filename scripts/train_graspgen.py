@@ -389,11 +389,21 @@ def train(rank, cfg):
         if cfg.train.checkpoint is not None:
             if os.path.exists(cfg.train.checkpoint):
                 ckpt = torch.load(cfg.train.checkpoint, map_location="cpu")
-                init_epoch = ckpt["epoch"]
                 model.load_state_dict(ckpt["model"])
-                optimizer.load_state_dict(ckpt["optimizer"])
-                logger.info(f"Loading from checkpoint {cfg.train.checkpoint}")
-                init_batch_idx = ckpt["batch_idx"] if "batch_idx" in ckpt else 0
+                if cfg.train.get("finetune", False):
+                    # Fine-tuning from a pretrained checkpoint (e.g. another
+                    # gripper): take ONLY the model weights. Keep a fresh
+                    # optimizer and start the epoch/batch counters at 0 so the
+                    # full schedule + eval/save cadence run from the start.
+                    logger.info(
+                        f"FINE-TUNE: loaded model weights from {cfg.train.checkpoint} "
+                        f"(fresh optimizer, epoch 0)"
+                    )
+                else:
+                    init_epoch = ckpt["epoch"]
+                    optimizer.load_state_dict(ckpt["optimizer"])
+                    logger.info(f"Loading from checkpoint {cfg.train.checkpoint}")
+                    init_batch_idx = ckpt["batch_idx"] if "batch_idx" in ckpt else 0
             else:
                 logger.warning(f"Checkpoint file not found {cfg.train.checkpoint}")
     except (RuntimeError, EOFError) as e:

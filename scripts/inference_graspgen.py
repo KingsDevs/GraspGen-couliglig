@@ -506,7 +506,9 @@ def main(cfg: DictConfig) -> None:
         model.load_state_dict(cfg.eval.checkpoint, cfg.discriminator.checkpoint)
     else:
         ckpt = torch.load(cfg.eval.checkpoint, map_location="cpu")
-        model.load_state_dict(ckpt)
+        # training checkpoints are saved as {epoch, model, optimizer}; older
+        # exported checkpoints may be a bare state_dict.
+        model.load_state_dict(ckpt["model"] if "model" in ckpt else ckpt)
     model = model.cuda().eval()
 
     # gripper = PandaGripper().hand

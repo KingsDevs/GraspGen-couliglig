@@ -184,6 +184,7 @@ train:
     save_freq: 10
     eval_freq: 5
     checkpoint: null
+    finetune: False   # if True, load ONLY model weights from checkpoint (fresh optimizer, epoch 0)
     log_dir: ''
     num_scenes: null
     debug: False

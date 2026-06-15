@@ -8,6 +8,17 @@
 #   1. pointnet2_ops  ->  run ./install_pointnet.sh  (or: cd pointnet2_ops && pip install --no-build-isolation .)
 #   2. SAM-2          ->  install from source: pip install git+https://github.com/facebookresearch/sam2.git
 #                        (only needed for the SAM2 segmentation server / rpc_server)
+#   3. SAM-3          ->  only needed for the text-prompt server (rpc_server_sam3.py).
+#                        Needs transformers>=5.x, which pulls huggingface_hub>=1.x — and
+#                        that is INCOMPATIBLE with the ancient diffusers (0.11.1) GraspGen
+#                        uses. So DO NOT install SAM3 into this env. Use a SEPARATE venv:
+#                          python -m venv ~/.venvs/sam3 && source ~/.venvs/sam3/bin/activate
+#                          pip install "transformers>=5" torch torchvision pillow opencv-python \
+#                                      numpy scikit-learn pyzmq msgpack msgpack-numpy
+#                          huggingface-cli login            # facebook/sam3 is a gated model
+#                        rpc_server_sam3.py runs in that venv and FORWARDS the cleaned
+#                        cloud over ZMQ to the GraspGen server (client-server/graspgen_server.py),
+#                        which keeps running in THIS pinned env. See that file's header.
 
 # --- Package indexes for CUDA wheels (must come first) ---
 --extra-index-url https://download.pytorch.org/whl/cu121

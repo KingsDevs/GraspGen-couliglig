@@ -122,15 +122,22 @@ print(client.get_metadata())                  # model id, scale target, etc.
 # image: RGB (H,W,3) uint8 ; point_cloud: organized (H,W,3) float32 (meters)
 result = client.infer(image, point_cloud, "the red mug")
 
-best = result["best_grasp"]
-if best is None:
-    print("not found:", result["message"])
-else:
-    print("pose (4x4, meters):", best["pose"])
-    print("confidence:", best["confidence"])
+# `grasps` is a confidence-ranked list (best first), all in the zed_camera frame
+# (meters). Your ROS/MoveIt node should TF each to base_link and run IK in order,
+# taking the first reachable one. `best_grasp` == grasps[0] for convenience.
+for g in result["grasps"]:                 # [] if nothing found (see result["message"])
+    pose = g["pose"]                       # 4x4, zed_camera frame, meters
+    conf = g["confidence"]
+    # T_base = TF(base_link <- zed_camera) @ pose ; moveit_compute_ik(T_base) ...
+    # break on the first reachable candidate
 ```
 
 You can also talk to GraspGen directly with `GraspGenClient("localhost", 5556)`.
+
+> The SAM3 server is **arm-agnostic** — it returns the top-N candidate grasps in
+> the camera frame. Reachability filtering (IK, joint limits, collisions) is done
+> on the ROS side with MoveIt, which already has the camera→base transform from the
+> URDF (`base_link_to_zed_camera`). Tune the count with `--top-n` / `SAM3_TOP_N`.
 
 ---
 

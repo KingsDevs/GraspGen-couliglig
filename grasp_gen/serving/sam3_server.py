@@ -95,49 +95,45 @@ def _decode_point_cloud(pc_payload) -> np.ndarray:
 # Grasp selection / formatting
 # ---------------------------------------------------------------------------
 
-def _select_grasp_index(
-    grasps: np.ndarray, confidences: np.ndarray, selection: str
-) -> int:
-    """Pick a single grasp index from the candidates.
-
-    "max_confidence" returns the top-scored grasp (jittery across diffusion runs).
-    "spatial_median" picks the grasp closest to the median translation of the
-    top-K, which is more stable across stochastic samples.
-    """
-    if selection == "max_confidence" or len(grasps) <= 1:
-        return int(np.argmax(confidences))
-
-    positions = grasps[:, :3, 3]
-    median_position = np.median(positions, axis=0)
-    distances = np.linalg.norm(positions - median_position, axis=1)
-    return int(np.argmin(distances))
-
-
-def _format_best_grasp(
-    grasps: np.ndarray, confidences: np.ndarray, selection: str
+def _format_grasps(
+    grasps: np.ndarray, confidences: np.ndarray, top_n: int
 ) -> dict:
-    best_idx = _select_grasp_index(grasps, confidences, selection)
-    pose = grasps[best_idx].astype(np.float32, copy=False)
-    confidence = float(confidences[best_idx])
-    return {
-        "best_grasp": {
+    """Return the top-N candidate grasps, ranked by confidence (best first).
+
+    The client's robot/MoveIt side runs IK/reachability on these in order and
+    takes the first reachable one, so we hand back a ranked list rather than
+    collapsing to a single pick. All poses are in the `zed_camera` frame, meters.
+    """
+    order = np.argsort(confidences)[::-1]
+    if top_n > 0:
+        order = order[:top_n]
+
+    ranked = []
+    for rank, idx in enumerate(order):
+        pose = grasps[idx].astype(np.float32, copy=False)
+        ranked.append({
             "pose": pose,
             "position": pose[:3, 3].astype(np.float32, copy=False),
             "rotation_matrix": pose[:3, :3].astype(np.float32, copy=False),
-            "confidence": confidence,
-            "candidate_index": best_idx,
-            "selection": selection,
-            "frame": "zed_camera",
-            "units": "meters",
-        },
-        "num_grasps": 1,
+            "confidence": float(confidences[idx]),
+            "candidate_index": int(idx),
+            "rank": rank,
+        })
+
+    return {
+        "grasps": ranked,                      # ranked best-first, for MoveIt to try
+        "best_grasp": ranked[0] if ranked else None,
+        "num_grasps": len(ranked),
         "num_candidates": int(len(grasps)),
-        "best_confidence": confidence,
+        "best_confidence": ranked[0]["confidence"] if ranked else 0.0,
+        "frame": "zed_camera",
+        "units": "meters",
     }
 
 
 def _empty_grasp_result(reason: str) -> dict:
     return {
+        "grasps": [],
         "best_grasp": None,
         "num_grasps": 0,
         "num_candidates": 0,
@@ -286,7 +282,7 @@ class SAM3Server:
         max_tries: int = 3,
         remove_outliers: bool = True,
         min_points: int = 32,
-        selection: str = "spatial_median",
+        top_n: int = 20,
         # 3D cleanup params
         dbscan: bool = True,
         dbscan_eps: float = 0.01,
@@ -313,7 +309,7 @@ class SAM3Server:
         self._max_tries = max_tries
         self._remove_outliers = remove_outliers
         self._min_points = min_points
-        self._selection = selection
+        self._top_n = top_n
 
         self._dbscan = dbscan
         self._dbscan_eps = dbscan_eps
@@ -341,9 +337,9 @@ class SAM3Server:
         )
         logger.info(
             "GraspGen forwarding -> tcp://%s:%d (num_grasps=%d, topk=%d, "
-            "min_grasps=%d, max_tries=%d, remove_outliers=%s, selection=%s)",
+            "min_grasps=%d, max_tries=%d, remove_outliers=%s, top_n=%d)",
             graspgen_host, graspgen_port, num_grasps, topk_num_grasps,
-            min_grasps, max_tries, remove_outliers, selection,
+            min_grasps, max_tries, remove_outliers, top_n,
         )
 
         self._metadata = {
@@ -353,7 +349,9 @@ class SAM3Server:
             "threshold": threshold,
             "mask_threshold": mask_threshold,
             "graspgen_target": f"tcp://{graspgen_host}:{graspgen_port}",
-            "selection": selection,
+            "top_n": top_n,
+            "frame": "zed_camera",
+            "units": "meters",
         }
 
     # ------------------------------------------------------------------
@@ -559,10 +557,12 @@ class SAM3Server:
         if len(grasps_np) == 0:
             return _empty_grasp_result("GraspGen returned no grasps")
 
-        grasps_np = np.asarray(grasps_np, dtype=np.float32)
+        # np.array (not asarray) forces a writable copy — the msgpack-decoded
+        # array is backed by the read-only receive buffer.
+        grasps_np = np.array(grasps_np, dtype=np.float32)
         confidences_np = np.asarray(confidences_np, dtype=np.float32)
         grasps_np[:, 3, 3] = 1
-        return _format_best_grasp(grasps_np, confidences_np, self._selection)
+        return _format_grasps(grasps_np, confidences_np, self._top_n)
 
     def _show(self, rgb, mask, mask_resized, finite_map, pc, u, v, score,
               n_pts, text) -> None:
@@ -642,6 +642,10 @@ def parse_args():
     parser.add_argument("--visualize", action="store_true",
                         default=_env_flag("RPC_VISUALIZE", "0"),
                         help="Open an OpenCV window showing the segmentation")
+    parser.add_argument("--top-n", type=int,
+                        default=int(os.getenv("SAM3_TOP_N", "20")),
+                        help="Number of ranked candidate grasps to return "
+                             "(client/MoveIt picks the first reachable one)")
     return parser.parse_args()
 
 
@@ -662,6 +666,7 @@ def main():
         threshold=args.threshold,
         mask_threshold=args.mask_threshold,
         visualize=args.visualize,
+        top_n=args.top_n,
     )
     server.serve_forever()
 

@@ -18,6 +18,7 @@ import msgpack_numpy
 msgpack_numpy.patch()
 
 from grasp_gen.grasp_server import GraspGenSampler, load_grasp_cfg
+from grasp_gen.utils.point_cloud_utils import point_cloud_outlier_removal
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +39,17 @@ class GraspGenZMQServer:
         host: str = "0.0.0.0",
         port: int = 5556,
         scale: float = 1.0,
+        max_points: int = 2000,
     ) -> None:
         self._host = host
         self._port = port
         self._gripper_config = gripper_config
+        # Cap the input cloud size. GraspGen's outlier removal does an O(N^2)
+        # torch.cdist (an N x N matrix), so a full-res masked cloud (~100k pts)
+        # tries to allocate tens of GB and OOMs the GPU. The model expects a
+        # downsampled object cloud anyway (the repo's mesh client uses 2000).
+        # 0 disables the cap.
+        self._max_points = int(max_points)
         # Scale bridge between real-world sensor units and the magnified space a
         # model was trained in. The Couliglig model was trained entirely in S=7
         # scaled space, so a real-meter cloud is 7x too small for it. We multiply
@@ -70,6 +78,7 @@ class GraspGenZMQServer:
             "model_name": self._model_name,
             "gripper_config": gripper_config,
             "scale": self._scale,
+            "max_points": self._max_points,
         }
 
     def serve_forever(self) -> None:
@@ -116,6 +125,31 @@ class GraspGenZMQServer:
                 "error": f"point_cloud must be (N, 3), got {point_cloud.shape}"
             }
 
+        # Downsample to bound the O(N^2) outlier-removal cdist (and match the
+        # downsampled object cloud the model expects). No-op if already small.
+        n_in = len(point_cloud)
+        if self._max_points and n_in > self._max_points:
+            idx = np.random.choice(n_in, self._max_points, replace=False)
+            point_cloud = point_cloud[idx]
+            logger.info("Downsampled cloud %d -> %d points", n_in, len(point_cloud))
+
+        # Outlier removal here, in REAL scale, BEFORE up-scaling — its distance
+        # threshold (0.014 m) is absolute, so running it after the x7 scale-up
+        # would treat every neighbor gap as an outlier and cull the whole cloud.
+        # A guard keeps the original cloud if removal would leave too few points.
+        # We then pass remove_outliers=False so sample() doesn't redo it post-scale.
+        remove_outliers = bool(request.get("remove_outliers", True))
+        if remove_outliers:
+            filtered, _ = point_cloud_outlier_removal(point_cloud)
+            filtered = filtered.cpu().numpy().astype(np.float32)
+            if len(filtered) >= 32:
+                point_cloud = filtered
+            else:
+                logger.warning(
+                    "Outlier removal left %d pts; keeping unfiltered cloud (%d)",
+                    len(filtered), len(point_cloud),
+                )
+
         # Up-scale the real-meter cloud into the model's trained (magnified)
         # space. No-op when scale == 1.0 (Robotiq).
         if self._scale != 1.0:
@@ -127,7 +161,7 @@ class GraspGenZMQServer:
             "topk_num_grasps": int(request.get("topk_num_grasps", -1)),
             "min_grasps": int(request.get("min_grasps", 40)),
             "max_tries": int(request.get("max_tries", 6)),
-            "remove_outliers": bool(request.get("remove_outliers", True)),
+            "remove_outliers": False,  # already done above, in real scale
         }
 
         t0 = time.monotonic()

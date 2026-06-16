@@ -112,7 +112,11 @@ class SAM3Client:
             text: concept prompt, e.g. "the red mug".
 
         Returns:
-            Server result dict: best_grasp (or None), num_candidates, timing, etc.
+            Server result dict with `grasps`: a confidence-ranked list of candidate
+            grasps (each {pose 4x4, position, rotation_matrix, confidence, rank}) in
+            the `zed_camera` frame, meters. Also `best_grasp` (= grasps[0] or None),
+            `num_candidates`, `timing`. Run your IK/MoveIt reachability check over
+            `grasps` in order and take the first reachable one.
         """
         payload = {
             "action": "infer",

@@ -60,6 +60,16 @@ def parse_args():
             "output."
         ),
     )
+    parser.add_argument(
+        "--max_points",
+        type=int,
+        default=int(os.getenv("GRASPGEN_MAX_POINTS", "2000")),
+        help=(
+            "Cap on input cloud size (default: 2000 or $GRASPGEN_MAX_POINTS). "
+            "Guards the O(N^2) outlier-removal cdist from OOMing on large clouds; "
+            "0 disables."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -78,6 +88,7 @@ def main():
         host=args.host,
         port=args.port,
         scale=args.scale,
+        max_points=args.max_points,
     )
     server.serve_forever()
 

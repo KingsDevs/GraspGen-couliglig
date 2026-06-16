@@ -1,0 +1,100 @@
+# SAM3 (text-prompt) + GraspGen, two GPU services.
+#
+# - graspgen: GraspGen ZMQ inference server (Couliglig model, scale 7.0) on 5556.
+# - sam3:     SAM3 text-prompt segmentation server on 5557; forwards cleaned
+#             clouds to `graspgen` over the compose network.
+#
+# The WHOLE REPO is bind-mounted to /code in both containers (one volume); images
+# carry only the environment. Weights reach the containers via that mount
+# (/code/weights) and are .dockerignored from the build context.
+#
+# Prereqs:
+#   1. Build the GraspGen base image once:   bash docker/build.sh   (-> graspgen:latest)
+#   2. Install nvidia-container-toolkit so docker has the `nvidia` runtime.
+#   3. Accept the gated facebook/sam3 terms and export your HF token:
+#        export HF_TOKEN=hf_xxx
+#
+# Run:
+#   HF_TOKEN=$HF_TOKEN docker compose -f docker/compose.sam3.yml up --build
+#
+# Clients (on the host) reach SAM3 at tcp://localhost:5557, GraspGen at :5556.
+
+services:
+  graspgen:
+    image: graspgen-server
+    build:
+      context: ..
+      dockerfile: docker/serve.dockerfile
+    init: true
+    tty: true
+    volumes:
+      - ..:/code
+    environment:
+      - PYTHONPATH=/code
+      - NVIDIA_DISABLE_REQUIRE=1
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    command: >
+      python client-server/graspgen_server.py
+      --gripper_config /code/weights/graspgen_couliglig.yml
+      --port 5556
+      --scale 7.0
+    ports:
+      - "5556:5556"
+    networks:
+      - graspnet
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    shm_size: "8g"
+
+  sam3:
+    image: sam3-server
+    build:
+      context: ..
+      dockerfile: docker/sam3.dockerfile
+    init: true
+    tty: true
+    depends_on:
+      - graspgen
+    volumes:
+      - ..:/code
+      - hf-cache:/hf-cache
+    environment:
+      - PYTHONPATH=/code
+      - GRASPGEN_HOST=graspgen
+      - GRASPGEN_PORT=5556
+      - RPC_VISUALIZE=0
+      - SAM3_FP16=1
+      - HF_HOME=/hf-cache
+      - HF_TOKEN=${HF_TOKEN:-}
+      - NVIDIA_DISABLE_REQUIRE=1
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    command: >
+      python -m grasp_gen.serving.sam3_server
+      --host 0.0.0.0
+      --port 5557
+      --graspgen-host graspgen
+      --graspgen-port 5556
+    ports:
+      - "5557:5557"
+    networks:
+      - graspnet
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    shm_size: "8g"
+
+networks:
+  graspnet:
+    driver: bridge
+
+volumes:
+  hf-cache:

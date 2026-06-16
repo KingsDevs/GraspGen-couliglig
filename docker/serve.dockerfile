@@ -1,23 +1,20 @@
-# GraspGen ZMQ Inference Server
+# GraspGen ZMQ inference serving environment.
 #
-# This Dockerfile builds on top of the graspgen:latest base image
-# (built via `bash docker/build.sh`) and adds ZMQ serving dependencies.
+# Builds on the graspgen:latest base (built via `bash docker/build.sh`) and adds
+# the ZMQ serving deps. Code is NOT copied in — the whole repo is bind-mounted to
+# /code at runtime (see docker/compose.sam3.yml), so the image only carries the
+# environment. PYTHONPATH=/code makes `import grasp_gen` resolve from the mount.
 #
-# Build standalone:
-#   docker build -f docker/serve.dockerfile -t graspgen-server:latest .
-#
-# Or via compose:
-#   docker compose -f docker/compose.serve.yml up --build
+# Build:
+#   docker compose -f docker/compose.sam3.yml build graspgen
+#   # or: docker build -f docker/serve.dockerfile -t graspgen-server:latest .
 
 FROM graspgen:latest
 
-RUN pip install pyzmq msgpack msgpack-numpy
+RUN pip install --no-cache-dir pyzmq msgpack msgpack-numpy
 
-COPY . /code
 WORKDIR /code
-RUN pip install -e .
+ENV PYTHONPATH=/code
 
+# The launch command (gripper config, port, scale) is supplied by compose.
 EXPOSE 5556
-
-ENTRYPOINT ["python", "tools/graspgen_server.py"]
-CMD ["--gripper_config", "/models/checkpoints/graspgen_robotiq_2f_140.yml", "--port", "5556"]

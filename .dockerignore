@@ -1,0 +1,38 @@
+# Keep the Docker build context small. Code and weights are MOUNTED at runtime
+# (the whole repo is bind-mounted to /code), not baked into images — so none of
+# this needs to ship in the build context.
+
+# Model weights (1.2 GB) — mounted via the repo volume at /code/weights
+weights/
+*.pth
+*.pt
+
+# Virtualenvs / local Python envs
+.venv/
+venv/
+env/
+
+# VCS / IDE / agent dirs
+.git/
+.gitignore
+.codex/
+.agents/
+.claude/
+
+# Python caches / build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Run outputs / data / logs
+runs/
+data/
+*.log
+
+# Docs / media not needed at build
+docs/
+tutorials/
+fig/
+*.md

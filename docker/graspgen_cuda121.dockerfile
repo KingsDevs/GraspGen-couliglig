@@ -22,9 +22,14 @@ RUN pip install imageio pickle5 opencv-python python-fcl
 # Install pyrender
 RUN pip install pyrender==0.1.45 pyglet==2.1.6 && pip install PyOpenGL==3.1.5
 
-# Install pointnet2 modules
+# Install pointnet2 modules.
+#  --no-build-isolation : so setup.py can import the already-installed torch.
+#  TORCH_CUDA_ARCH_LIST : required (no GPU visible at build time); 8.9 = RTX 4050 (Ada).
+#  MAX_JOBS=2           : CAP the CUDA-kernel compile parallelism. torch/ninja default
+#                         to all cores (16 here); each nvcc job needs ~1-2 GB, so 16
+#                         parallel jobs exhausted the 15 GB RAM and FROZE the machine.
 COPY pointnet2_ops pointnet2_ops
-RUN pip install ./pointnet2_ops
+RUN TORCH_CUDA_ARCH_LIST="8.9" MAX_JOBS=2 pip install --no-build-isolation ./pointnet2_ops
 
 # Diffusion dependencies
 RUN pip install diffusers==0.11.1 timm==1.0.15

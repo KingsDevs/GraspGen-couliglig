@@ -182,10 +182,86 @@ To serve **Robotiq instead of Couliglig**, change the `graspgen` command to
 
 ---
 
-## Non-Docker alternative
+## Native (non-Docker) setup
 
-You can run the same two processes in local venvs instead (see `requirements.txt` notes):
-- GraspGen in the pinned repo `.venv`:
-  `python client-server/graspgen_server.py --gripper_config weights/graspgen_couliglig.yml --port 5556 --scale 7.0`
-- SAM3 in a separate venv with `transformers>=5`:
-  `python -m grasp_gen.serving.sam3_server --port 5557 --graspgen-port 5556`
+Run the same two services in two local virtualenvs — **no Docker, no NVIDIA Container
+Toolkit needed**. They must be *separate* venvs: GraspGen needs the ancient `diffusers`,
+SAM3 needs `transformers>=5`; the two can't coexist.
+
+Prereqs: Python 3.10, an NVIDIA GPU with a CUDA 12.x driver (`nvidia-smi` works), and
+build tools (`g++`, CUDA toolkit) for the one source-compiled dependency.
+
+### Env 1 — GraspGen (repo `.venv`)
+
+Runs `graspgen_server.py` (GraspGen model + ZMQ). This is the pinned CUDA 12.1 / torch
+2.1.0 environment from `requirements.txt`.
+
+```bash
+cd /home/karlshane/GraspGen-couliglig
+python3.10 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+
+# 1. Pinned deps (torch 2.1.0+cu121, torch-geometric stack, spconv, serving deps, ...)
+pip install -r requirements.txt
+
+# 2. pointnet2_ops — a CUDA extension built from source. MUST use
+#    --no-build-isolation (so setup.py can import the installed torch).
+#    TORCH_CUDA_ARCH_LIST: set to YOUR GPU (8.9 = RTX 4050 Ada; use 8.6 for Ampere).
+#    MAX_JOBS=2: cap parallel nvcc — the default (all cores) can exhaust RAM and
+#    FREEZE a low-RAM machine while compiling.
+TORCH_CUDA_ARCH_LIST="8.9" MAX_JOBS=2 pip install --no-build-isolation ./pointnet2_ops
+
+# 3. Make the grasp_gen package importable
+pip install -e .
+```
+> SAM-2 is **not** needed for the SAM3 pipeline — skip the `sam2` install in
+> `requirements.txt`. `pyzmq` / `msgpack` / `msgpack-numpy` are already in `requirements.txt`.
+
+### Env 2 — SAM3 (`~/.venvs/sam3`)
+
+Runs `sam3_server.py` (SAM3 segmentation). It only imports the lightweight `GraspGenClient`
+from the repo — **none** of GraspGen's heavy CUDA deps — so this venv stays small.
+
+```bash
+python3.10 -m venv ~/.venvs/sam3
+source ~/.venvs/sam3/bin/activate
+pip install --upgrade pip
+
+# transformers>=5 (SAM3) + torch + the bits sam3_server.py imports
+pip install "transformers>=5" torch torchvision pillow opencv-python \
+            numpy scikit-learn pyzmq msgpack msgpack-numpy
+
+# facebook/sam3 is gated: accept its terms on huggingface.co, then log in once.
+# The cached token is reused by from_pretrained (no HF_TOKEN env needed).
+huggingface-cli login
+```
+> `import grasp_gen.serving.sam3_client` resolves because you launch from the repo root
+> (cwd is on `sys.path`); no `pip install -e .` needed in this venv.
+
+### Run (two terminals)
+
+**Terminal 1 — GraspGen** (repo `.venv`):
+```bash
+cd /home/karlshane/GraspGen-couliglig && source .venv/bin/activate
+python client-server/graspgen_server.py \
+    --gripper_config weights/graspgen_couliglig.yml \
+    --port 5556 --scale 7.0          # Robotiq: graspgen_robotiq_2f_140.yml --scale 1.0
+```
+Wait for `Model loaded and ready for inference`.
+
+**Terminal 2 — SAM3** (`sam3` venv, **launched from the repo root** so `grasp_gen` imports):
+```bash
+cd /home/karlshane/GraspGen-couliglig && source ~/.venvs/sam3/bin/activate
+python -m grasp_gen.serving.sam3_server \
+    --port 5557 --graspgen-host localhost --graspgen-port 5556
+    # add --visualize for the OpenCV segmentation window (you have a display natively)
+```
+Wait for `SAM3 loaded.` then `SAM3 server listening on tcp://0.0.0.0:5557`.
+
+Then call it exactly as in the **Use it (client)** section above — `SAM3Client("localhost", 5557)`.
+
+> Native run notes:
+> - Same 6 GB-GPU caveat: both models share the card. SAM3 loads fp16 by default;
+>   start GraspGen first, then SAM3, and watch `nvidia-smi`.
+> - Code edits take effect on the **next server restart** — no rebuild.

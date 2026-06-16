@@ -37,10 +37,19 @@ class GraspGenZMQServer:
         gripper_config: str,
         host: str = "0.0.0.0",
         port: int = 5556,
+        scale: float = 1.0,
     ) -> None:
         self._host = host
         self._port = port
         self._gripper_config = gripper_config
+        # Scale bridge between real-world sensor units and the magnified space a
+        # model was trained in. The Couliglig model was trained entirely in S=7
+        # scaled space, so a real-meter cloud is 7x too small for it. We multiply
+        # the incoming cloud by `scale` before inference and divide the predicted
+        # grasp TRANSLATIONS by `scale` on the way out (rotations are scale-
+        # invariant). scale=1.0 is a no-op — correct for the Robotiq model, which
+        # was trained at real-world scale. See the Couliglig config notes.
+        self._scale = float(scale)
 
         logger.info("Loading gripper config from %s", gripper_config)
         self._cfg = load_grasp_cfg(gripper_config)
@@ -48,9 +57,10 @@ class GraspGenZMQServer:
         self._model_name = self._cfg.eval.model_name
 
         logger.info(
-            "Initializing GraspGenSampler (model=%s, gripper=%s)",
+            "Initializing GraspGenSampler (model=%s, gripper=%s, scale=%.4g)",
             self._model_name,
             self._gripper_name,
+            self._scale,
         )
         self._sampler = GraspGenSampler(self._cfg)
         logger.info("Model loaded and ready for inference")
@@ -59,6 +69,7 @@ class GraspGenZMQServer:
             "gripper_name": self._gripper_name,
             "model_name": self._model_name,
             "gripper_config": gripper_config,
+            "scale": self._scale,
         }
 
     def serve_forever(self) -> None:
@@ -105,6 +116,11 @@ class GraspGenZMQServer:
                 "error": f"point_cloud must be (N, 3), got {point_cloud.shape}"
             }
 
+        # Up-scale the real-meter cloud into the model's trained (magnified)
+        # space. No-op when scale == 1.0 (Robotiq).
+        if self._scale != 1.0:
+            point_cloud = point_cloud * np.float32(self._scale)
+
         params = {
             "grasp_threshold": float(request.get("grasp_threshold", -1.0)),
             "num_grasps": int(request.get("num_grasps", 200)),
@@ -130,6 +146,11 @@ class GraspGenZMQServer:
 
         grasps_np = grasps.cpu().numpy().astype(np.float32)
         conf_np = grasp_conf.cpu().numpy().astype(np.float32)
+
+        # De-scale predicted translations back to real-world meters. Rotations
+        # are scale-invariant, so only the translation column changes.
+        if self._scale != 1.0:
+            grasps_np[:, :3, 3] /= np.float32(self._scale)
 
         logger.info(
             "Inferred %d grasps in %.1f ms (conf range %.3f - %.3f)",

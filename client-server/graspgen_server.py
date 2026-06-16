@@ -22,6 +22,7 @@ Usage:
 
 import argparse
 import logging
+import os
 
 
 def parse_args():
@@ -47,6 +48,18 @@ def parse_args():
         default=5556,
         help="Port to bind the ZMQ socket (default: 5556)",
     )
+    parser.add_argument(
+        "--scale",
+        type=float,
+        default=float(os.getenv("GRASPGEN_SCALE", "1.0")),
+        help=(
+            "Real-world-to-model scale factor (default: 1.0 or $GRASPGEN_SCALE). "
+            "Use 1.0 for the Robotiq model (trained at real scale); use 7.0 for "
+            "the Couliglig model (trained in S=7 magnified space). The cloud is "
+            "multiplied by this on input and grasp translations divided by it on "
+            "output."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -64,6 +77,7 @@ def main():
         gripper_config=args.gripper_config,
         host=args.host,
         port=args.port,
+        scale=args.scale,
     )
     server.serve_forever()
 

@@ -31,7 +31,7 @@ RPC_VISUALIZE = os.getenv("RPC_VISUALIZE", "1").lower() not in {
 }
 RPC_MAX_MARKERS = int(os.getenv("RPC_MAX_MARKERS", "1000"))
 GRASPGEN_CONFIG = os.getenv(
-    "GRASPGEN_CONFIG", "weights/graspgen_robotiq_2f_140.yml"
+    "GRASPGEN_CONFIG", "weights/graspgen_couliglig.yml"
 )
 GRASPGEN_NUM_GRASPS = int(os.getenv("GRASPGEN_NUM_GRASPS", "100"))
 GRASPGEN_TOPK = int(os.getenv("GRASPGEN_TOPK", "20"))

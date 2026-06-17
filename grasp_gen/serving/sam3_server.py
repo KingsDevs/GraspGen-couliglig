@@ -274,6 +274,8 @@ class SAM3Server:
         threshold: float = 0.5,
         mask_threshold: float = 0.5,
         visualize: bool = False,
+        vis_path: str = "/tmp/sam3_seg.png",
+        dump_cloud: str = "",
         max_markers: int = 1000,
         # GraspGen forwarding params
         num_grasps: int = 100,
@@ -300,6 +302,14 @@ class SAM3Server:
         self._threshold = threshold
         self._mask_threshold = mask_threshold
         self._visualize = visualize
+        # cv2.imwrite picks the format from the extension; if the user gave a
+        # path without an image extension (e.g. ".../viz"), default it to .png.
+        if vis_path and os.path.splitext(vis_path)[1].lower() not in {
+            ".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tiff", ".tif",
+        }:
+            vis_path = vis_path + ".png"
+        self._vis_path = vis_path
+        self._dump_cloud = dump_cloud
         self._max_markers = max_markers
         self._model_id = model_id
 
@@ -427,6 +437,10 @@ class SAM3Server:
         t_sam = time.perf_counter()
         if seg is None:
             logger.info("SAM3 found no instance for %r", text)
+            # Still paint the frame so the viz window shows the live image with a
+            # "no match" label, rather than going black on every miss.
+            if self._visualize:
+                self._show_message(rgb, f"no match: '{text}'")
             return _empty_grasp_result(f"SAM3 found no instance for '{text}'")
         mask, score, n_instances = seg
         logger.info(
@@ -504,6 +518,16 @@ class SAM3Server:
 
         t_mask = time.perf_counter()
 
+        # Temporary debug: dump the exact cleaned cloud forwarded to GraspGen
+        # (real meters, camera frame) so it can be inspected in 3D. Off unless
+        # --dump-cloud / SAM3_DUMP_CLOUD is set.
+        if self._dump_cloud and len(pts):
+            try:
+                np.save(self._dump_cloud, np.asarray(pts, dtype=np.float32))
+                logger.info("Dumped %d-pt cloud -> %s", len(pts), self._dump_cloud)
+            except Exception as exc:
+                logger.warning("Could not dump cloud: %s", exc)
+
         grasp_result = self._infer_grasp(pts)
         t_graspgen = time.perf_counter()
 
@@ -580,8 +604,34 @@ class SAM3Server:
             for r, c in coords:
                 px = (int(c * scale_c), int(r * scale_r))
                 cv2.drawMarker(vis, px, (255, 0, 255), cv2.MARKER_STAR, 12, 2)
-        cv2.imshow("SAM3 Segmentation", vis)
-        cv2.waitKey(1)
+        self._emit(vis)
+
+    def _show_message(self, rgb, message: str) -> None:
+        """Paint the raw frame with a status label (e.g. on a no-match miss)."""
+        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        for color, thickness in (((255, 255, 255), 2), ((0, 0, 255), 1)):
+            cv2.putText(bgr, message, (10, 28), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8, color, thickness, cv2.LINE_AA)
+        self._emit(bgr)
+
+    def _emit(self, bgr) -> None:
+        """Write the overlay to disk (reliable) and best-effort show a window.
+
+        The live imshow window often stays black: HighGUI only repaints while
+        cv2.waitKey() pumps its event loop, but this request-driven server blocks
+        in socket.recv() between frames. The PNG is the dependable way to verify
+        what SAM3 segmented — open self._vis_path (it's overwritten each request).
+        """
+        if self._vis_path:
+            try:
+                cv2.imwrite(self._vis_path, bgr)
+            except Exception as exc:
+                logger.warning("Could not write %s: %s", self._vis_path, exc)
+        try:
+            cv2.imshow("SAM3 Segmentation", bgr)
+            cv2.waitKey(1)
+        except Exception:
+            pass  # no display (headless) — the PNG still got written
 
     # ------------------------------------------------------------------
     # Entry point
@@ -593,6 +643,9 @@ class SAM3Server:
         bind_addr = f"tcp://{self._host}:{self._port}"
         socket.bind(bind_addr)
         logger.info("SAM3 server listening on %s", bind_addr)
+        if self._visualize:
+            logger.info("Segmentation overlay -> %s (overwritten each request)",
+                        self._vis_path)
 
         try:
             while True:
@@ -641,7 +694,16 @@ def parse_args():
                         help="Per-mask binarization threshold")
     parser.add_argument("--visualize", action="store_true",
                         default=_env_flag("RPC_VISUALIZE", "0"),
-                        help="Open an OpenCV window showing the segmentation")
+                        help="Save the segmentation overlay (and try a live window)")
+    parser.add_argument("--vis-path",
+                        default=os.getenv("SAM3_VIS_PATH", "/tmp/sam3_seg.png"),
+                        help="Where to write the segmentation overlay PNG each "
+                             "request (reliable; the live window often stays black)")
+    parser.add_argument("--dump-cloud",
+                        default=os.getenv("SAM3_DUMP_CLOUD", ""),
+                        help="If set, save the cleaned cloud forwarded to GraspGen "
+                             "to this .npy each request (debug; view with "
+                             "scripts/view_cloud.py)")
     parser.add_argument("--top-n", type=int,
                         default=int(os.getenv("SAM3_TOP_N", "20")),
                         help="Number of ranked candidate grasps to return "
@@ -666,6 +728,8 @@ def main():
         threshold=args.threshold,
         mask_threshold=args.mask_threshold,
         visualize=args.visualize,
+        vis_path=args.vis_path,
+        dump_cloud=args.dump_cloud,
         top_n=args.top_n,
     )
     server.serve_forever()

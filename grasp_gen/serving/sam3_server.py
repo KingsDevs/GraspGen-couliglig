@@ -131,6 +131,59 @@ def _format_grasps(
     }
 
 
+# Fixed "looking down" approach direction in the camera frame: a 90 degree pitch
+# off the camera's optical axis so the gripper points DOWN rather than forward.
+# In the ZED optical frame (X right, Y down, Z forward) "down" is +Y; flip the
+# sign / axis here if your camera frame differs. Used by the manual pose mode.
+_LOOK_DOWN_CAM = np.array([0.0, 1.0, 0.0])
+
+
+def _heuristic_pose(pts: np.ndarray):
+    """Synthesize a top-down grasp pose from the segmented cloud (no GraspGen).
+
+    Temporary stand-in for learned grasps: position is the cloud centroid, the
+    approach axis (+Z, GraspGen convention) looks straight down (`_LOOK_DOWN_CAM`),
+    and the roll is set so the finger-closing axis (+X) is horizontal and
+    perpendicular to the object's long axis — the gripper closes ACROSS the
+    object's narrow width.
+
+    Returns a (4, 4) float32 pose in the camera frame, or None if the geometry
+    is degenerate.
+    """
+    if len(pts) < 3:
+        return None
+
+    z = _LOOK_DOWN_CAM  # approach (+Z), looking straight down
+
+    center = pts.mean(axis=0)
+
+    # Long axis = principal component with the largest variance.
+    cov = np.cov((pts - center).T)
+    if not np.all(np.isfinite(cov)):
+        return None
+    _, evecs = np.linalg.eigh(cov)  # ascending eigenvalues
+    long_axis = evecs[:, -1]
+
+    # Project the long axis onto the plane perpendicular to the approach axis.
+    L = long_axis - (long_axis @ z) * z
+    if np.linalg.norm(L) < 1e-6:
+        # Object's long axis is ~parallel to the approach: pick any ref in-plane.
+        ref = np.array([1.0, 0.0, 0.0]) if abs(z[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        L = ref - (ref @ z) * z
+    L = L / np.linalg.norm(L)
+
+    x = np.cross(z, L)          # finger-closing, across the long axis
+    x = x / np.linalg.norm(x)
+    y = np.cross(z, x)          # right-handed; aligns with the long axis
+
+    pose = np.eye(4, dtype=np.float32)
+    pose[:3, 0] = x
+    pose[:3, 1] = y
+    pose[:3, 2] = z
+    pose[:3, 3] = center
+    return pose
+
+
 def _empty_grasp_result(reason: str) -> dict:
     return {
         "grasps": [],
@@ -285,6 +338,8 @@ class SAM3Server:
         remove_outliers: bool = True,
         min_points: int = 32,
         top_n: int = 20,
+        # Pose mode: "auto" forwards to GraspGen, "manual" uses the heuristic pose
+        pose_mode: str = "auto",
         # 3D cleanup params
         dbscan: bool = True,
         dbscan_eps: float = 0.01,
@@ -320,6 +375,8 @@ class SAM3Server:
         self._remove_outliers = remove_outliers
         self._min_points = min_points
         self._top_n = top_n
+
+        self._pose_mode = pose_mode
 
         self._dbscan = dbscan
         self._dbscan_eps = dbscan_eps
@@ -360,6 +417,7 @@ class SAM3Server:
             "mask_threshold": mask_threshold,
             "graspgen_target": f"tcp://{graspgen_host}:{graspgen_port}",
             "top_n": top_n,
+            "pose_mode": self._pose_mode,
             "frame": "zed_camera",
             "units": "meters",
         }
@@ -528,7 +586,10 @@ class SAM3Server:
             except Exception as exc:
                 logger.warning("Could not dump cloud: %s", exc)
 
-        grasp_result = self._infer_grasp(pts)
+        if self._pose_mode == "manual":
+            grasp_result = self._heuristic_grasp_result(pts)
+        else:
+            grasp_result = self._infer_grasp(pts)
         t_graspgen = time.perf_counter()
 
         if self._visualize:
@@ -587,6 +648,44 @@ class SAM3Server:
         confidences_np = np.asarray(confidences_np, dtype=np.float32)
         grasps_np[:, 3, 3] = 1
         return _format_grasps(grasps_np, confidences_np, self._top_n)
+
+    def _heuristic_grasp_result(self, pts: np.ndarray) -> dict:
+        """Manual-mode counterpart to `_infer_grasp`: synthesize one top-down pose.
+
+        Returns the same dict shape as `_format_grasps` so the client is unchanged.
+        """
+        if pts.ndim != 2 or pts.shape[1] != 3:
+            return _empty_grasp_result(
+                f"Segmented point cloud must be (N, 3), got {pts.shape}"
+            )
+        if len(pts) < self._min_points:
+            return _empty_grasp_result(
+                f"Only {len(pts)} segmented points; "
+                f"need at least {self._min_points}"
+            )
+
+        pose = _heuristic_pose(pts)
+        if pose is None:
+            return _empty_grasp_result("Heuristic pose is degenerate")
+
+        grasp = {
+            "pose": pose,
+            "position": pose[:3, 3].astype(np.float32, copy=False),
+            "rotation_matrix": pose[:3, :3].astype(np.float32, copy=False),
+            "confidence": 1.0,
+            "candidate_index": 0,
+            "rank": 0,
+        }
+        return {
+            "grasps": [grasp],
+            "best_grasp": grasp,
+            "num_grasps": 1,
+            "num_candidates": 1,
+            "best_confidence": 1.0,
+            "frame": "zed_camera",
+            "units": "meters",
+            "mode": "manual",
+        }
 
     def _show(self, rgb, mask, mask_resized, finite_map, pc, u, v, score,
               n_pts, text) -> None:
@@ -708,6 +807,11 @@ def parse_args():
                         default=int(os.getenv("SAM3_TOP_N", "20")),
                         help="Number of ranked candidate grasps to return "
                              "(client/MoveIt picks the first reachable one)")
+    parser.add_argument("--pose-mode", choices=("auto", "manual"),
+                        default=os.getenv("SAM3_POSE_MODE", "auto"),
+                        help="'auto' forwards the cloud to GraspGen; 'manual' "
+                             "synthesizes one top-down pose (centroid + long-axis "
+                             "roll) and skips GraspGen")
     return parser.parse_args()
 
 
@@ -731,6 +835,7 @@ def main():
         vis_path=args.vis_path,
         dump_cloud=args.dump_cloud,
         top_n=args.top_n,
+        pose_mode=args.pose_mode,
     )
     server.serve_forever()
 

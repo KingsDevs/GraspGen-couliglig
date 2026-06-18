@@ -132,11 +132,14 @@ def _format_grasps(
     }
 
 
-# Fixed "looking down" approach direction in the camera frame: a 90 degree pitch
-# off the camera's optical axis so the gripper points DOWN rather than forward.
-# In the ZED optical frame (X right, Y down, Z forward) "down" is +Y; flip the
-# sign / axis here if your camera frame differs. Used by the manual pose mode.
-_LOOK_DOWN_CAM = np.array([0.0, 1.0, 0.0])
+# Fixed "looking down" approach direction expressed in the point cloud frame
+# (ZED `zed_left_camera_frame`). This is world-down (arm `base_link` -Z) rotated
+# into the camera frame through the static RoArm-M3 TF chain
+# (base_link -> zed_camera [rpy 0 pi/2 0] -> zed_camera_link [rpy pi 0.384 0] ->
+# zed_left_camera_frame), so it already accounts for the camera's ~22 deg tilt
+# and the 180 deg mounting flip. Recompute and update this if that calibration
+# changes. Used by the manual pose mode.
+_LOOK_DOWN_CAM = np.array([0.927172, 0.0, -0.374636])
 
 
 def _heuristic_pose(pts: np.ndarray):

@@ -147,9 +147,10 @@ def _heuristic_pose(pts: np.ndarray):
 
     Temporary stand-in for learned grasps: position is the cloud centroid, the
     local X axis is the approach and looks straight down (`_LOOK_DOWN_CAM`), the
-    local Y axis aligns with the object's long axis, and the local Z axis is the
-    finger-closing direction — perpendicular to the long axis, so the gripper
-    closes ACROSS the object's narrow width.
+    local Z axis aligns with the object's long axis (the gripper's finger pivot
+    runs along the object's length), and the local Y axis is the finger-closing
+    direction — perpendicular to the long axis, so the gripper closes ACROSS the
+    object's narrow width.
 
     Returns a (4, 4) float32 pose in the camera frame, or None if the geometry
     is degenerate.
@@ -169,15 +170,15 @@ def _heuristic_pose(pts: np.ndarray):
     long_axis = evecs[:, -1]
 
     # Project the long axis onto the plane perpendicular to the approach axis.
-    y = long_axis - (long_axis @ x) * x
-    if np.linalg.norm(y) < 1e-6:
+    z = long_axis - (long_axis @ x) * x
+    if np.linalg.norm(z) < 1e-6:
         # Object's long axis is ~parallel to the approach: pick any ref in-plane.
         ref = np.array([1.0, 0.0, 0.0]) if abs(x[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
-        y = ref - (ref @ x) * x
-    y = y / np.linalg.norm(y)   # local Y, aligned with the long axis
+        z = ref - (ref @ x) * x
+    z = z / np.linalg.norm(z)   # local Z, aligned with the long axis
 
-    z = np.cross(x, y)          # local Z, finger-closing across the long axis
-    z = z / np.linalg.norm(z)
+    y = np.cross(z, x)          # local Y, finger-closing across the long axis
+    y = y / np.linalg.norm(y)
 
     pose = np.eye(4, dtype=np.float32)
     pose[:3, 0] = x

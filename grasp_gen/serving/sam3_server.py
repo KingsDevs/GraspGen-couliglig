@@ -128,6 +128,7 @@ def _format_grasps(
         "best_confidence": ranked[0]["confidence"] if ranked else 0.0,
         "frame": "zed_camera",
         "units": "meters",
+        "mode": "auto",
     }
 
 

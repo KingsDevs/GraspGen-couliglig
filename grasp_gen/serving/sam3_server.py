@@ -143,10 +143,10 @@ def _heuristic_pose(pts: np.ndarray):
     """Synthesize a top-down grasp pose from the segmented cloud (no GraspGen).
 
     Temporary stand-in for learned grasps: position is the cloud centroid, the
-    approach axis (+Z, GraspGen convention) looks straight down (`_LOOK_DOWN_CAM`),
-    and the roll is set so the finger-closing axis (+X) is horizontal and
-    perpendicular to the object's long axis — the gripper closes ACROSS the
-    object's narrow width.
+    local X axis is the approach and looks straight down (`_LOOK_DOWN_CAM`), the
+    local Y axis aligns with the object's long axis, and the local Z axis is the
+    finger-closing direction — perpendicular to the long axis, so the gripper
+    closes ACROSS the object's narrow width.
 
     Returns a (4, 4) float32 pose in the camera frame, or None if the geometry
     is degenerate.
@@ -154,7 +154,7 @@ def _heuristic_pose(pts: np.ndarray):
     if len(pts) < 3:
         return None
 
-    z = _LOOK_DOWN_CAM  # approach (+Z), looking straight down
+    x = _LOOK_DOWN_CAM  # approach (local X), looking straight down
 
     center = pts.mean(axis=0)
 
@@ -166,16 +166,15 @@ def _heuristic_pose(pts: np.ndarray):
     long_axis = evecs[:, -1]
 
     # Project the long axis onto the plane perpendicular to the approach axis.
-    L = long_axis - (long_axis @ z) * z
-    if np.linalg.norm(L) < 1e-6:
+    y = long_axis - (long_axis @ x) * x
+    if np.linalg.norm(y) < 1e-6:
         # Object's long axis is ~parallel to the approach: pick any ref in-plane.
-        ref = np.array([1.0, 0.0, 0.0]) if abs(z[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
-        L = ref - (ref @ z) * z
-    L = L / np.linalg.norm(L)
+        ref = np.array([1.0, 0.0, 0.0]) if abs(x[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        y = ref - (ref @ x) * x
+    y = y / np.linalg.norm(y)   # local Y, aligned with the long axis
 
-    x = np.cross(z, L)          # finger-closing, across the long axis
-    x = x / np.linalg.norm(x)
-    y = np.cross(z, x)          # right-handed; aligns with the long axis
+    z = np.cross(x, y)          # local Z, finger-closing across the long axis
+    z = z / np.linalg.norm(z)
 
     pose = np.eye(4, dtype=np.float32)
     pose[:3, 0] = x
